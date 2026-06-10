@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>茂生契約牧場產量紀錄 v2.6.0</title>
+  <title>茂生契約牧場產量紀錄 v2.8.0</title>
   
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -58,8 +58,8 @@
     const { useState, useEffect, useMemo } = React;
 
     // 系統版本號與開發者資訊
-    const VERSION = 'v2.6.0';
-    const UPDATE_DATE = '2026-06-10';
+    const VERSION = 'v2.8.0';
+    const UPDATE_DATE = '2026-06-11';
     const DEVELOPER = '吳尚穎';
 
     // 茂生契約牧場預設名單
@@ -257,6 +257,23 @@
         onConfirm: null
       });
 
+      // 產蛋日重複警示彈窗 (Modal)
+      const [dupModal, setDupModal] = useState({
+        show: false,
+        ranch: '',
+        date: '',
+        onConfirm: null
+      });
+
+      // 每月 1 號清除前一月歷史資料確認彈窗 (Modal)
+      const [clearanceModal, setClearanceModal] = useState({
+        show: false,
+        currentDateStr: '',
+        prevMonthStr: '',
+        prevMonthPattern: '',
+        currentMonthKey: ''
+      });
+
       // --- 2. 核心記憶化計算 (useMemo) ---
       
       const filteredRecords = useMemo(() => {
@@ -309,7 +326,7 @@
         return [...filteredRecords].sort((a, b) => new Date(a.date) - new Date(b.date));
       }, [filteredRecords]);
 
-      // --- 3. 副作用處理 (LocalStorage 同步) ---
+      // --- 3. 副作用處理 (LocalStorage 同步與每月 1 號清理偵測) ---
       useEffect(() => {
         localStorage.setItem('maosheng_gh_ranch_records_v2_5', JSON.stringify(records));
       }, [records]);
@@ -318,6 +335,38 @@
         localStorage.setItem('maosheng_gh_ranch_list_v2_5', JSON.stringify(ranches));
         localStorage.setItem('maosheng_gh_ranch_mapping_v2_5', JSON.stringify(ranchMapping));
       }, [ranches, ranchMapping]);
+
+      // 偵測每月 1 號例行備份與清除提醒
+      useEffect(() => {
+        const today = new Date();
+        if (today.getDate() === 1) {
+          const year = today.getFullYear();
+          const month = today.getMonth() + 1; // 1-12
+          const currentMonthKey = `${year}-${String(month).padStart(2, '0')}`;
+          
+          // 檢查本月是否已經執行過清除與提醒
+          const lastCleared = localStorage.getItem('maosheng_gh_last_cleared_month_v2_8');
+          if (lastCleared !== currentMonthKey) {
+            // 計算上個月份的年與月
+            let prevYear = year;
+            let prevMonth = month - 1;
+            if (prevMonth === 0) {
+              prevMonth = 12;
+              prevYear -= 1;
+            }
+            const prevMonthStr = `${prevYear}年${prevMonth}月`;
+            const prevMonthPattern = `${prevYear}-${String(prevMonth).padStart(2, '0')}`;
+            
+            setClearanceModal({
+              show: true,
+              currentDateStr: `${year}年${month}月1日`,
+              prevMonthStr,
+              prevMonthPattern,
+              currentMonthKey
+            });
+          }
+        }
+      }, []);
 
       // --- 4. 功能性處理函式 ---
 
@@ -418,6 +467,7 @@
 
       const unlockedEggs = getUnlockedEggTypes();
 
+      // 執行資料儲存之核心程序
       const executeSaveRecord = (eggsData, chickensData, totalMortalityNum) => {
         if (editingRecord) {
           setRecords(records.map(rec => rec.id === editingRecord ? {
@@ -457,6 +507,7 @@
         });
       };
 
+      // 提交表單（整合重複日期勾稽與產蛋率預警）
       const handleSubmit = (e) => {
         e.preventDefault();
         if (!formData.ranch) {
@@ -496,7 +547,6 @@
         }
 
         const eggsData = {};
-        let hasSelectedEggQty = false;
         let totalCartsCount = 0;
         let totalLooseBoxesCount = 0;
         
@@ -506,10 +556,6 @@
           const boxesVal = parseFloat(eggState.boxes) || 0;
           const trayBoxesVal = parseFloat(eggState.trayBoxes) || 0;
 
-          if (cartsVal > 0 || boxesVal > 0 || trayBoxesVal > 0) {
-            hasSelectedEggQty = true;
-          }
-          
           eggsData[type] = {
             carts: cartsVal,
             boxes: boxesVal,
@@ -520,37 +566,101 @@
           totalLooseBoxesCount += boxesVal;
         });
 
-        if (!hasSelectedEggQty) {
-          showToast('請在解鎖的蛋種中，至少填入一項產蛋數量！', 'error');
-          return;
-        }
+        // 定義後續儲存流程（含產蛋率檢查）
+        const proceedWithProductivityCheck = (finalEggsData, finalChickensData, finalMortality, isOverwriting, duplicateId) => {
+          const calculatedTotalEggs = (totalCartsCount * CART_TO_EGG_RATIO) + (totalLooseBoxesCount * WARNING_BOX_TO_EGG_RATIO);
+          const eggProductiveRate = totalChickensCount > 0 ? (calculatedTotalEggs / totalChickensCount) : 0;
+          const minThreshold = totalChickensCount * 0.85;
+          const maxThreshold = totalChickensCount;
 
-        const calculatedTotalEggs = (totalCartsCount * CART_TO_EGG_RATIO) + (totalLooseBoxesCount * WARNING_BOX_TO_EGG_RATIO);
-        const eggProductiveRate = totalChickensCount > 0 ? (calculatedTotalEggs / totalChickensCount) : 0;
-        const minThreshold = totalChickensCount * 0.85;
-        const maxThreshold = totalChickensCount;
+          const saveAction = () => {
+            if (isOverwriting && duplicateId) {
+              // 覆蓋模式：先排除舊重複紀錄，再安全加入新資料
+              setRecords(prev => {
+                const clean = prev.filter(r => r.id !== duplicateId);
+                const newRecord = {
+                  id: editingRecord || Date.now().toString(),
+                  ranch: formData.ranch,
+                  ranchType: formData.ranchType,
+                  date: formData.date,
+                  mortality: finalMortality,
+                  notes: formData.notes,
+                  ratio: CART_TO_BOX_RATIO,
+                  eggs: finalEggsData,
+                  chickens: finalChickensData
+                };
+                if (editingRecord) {
+                  return clean.map(rec => rec.id === editingRecord ? newRecord : rec);
+                } else {
+                  return [newRecord, ...clean];
+                }
+              });
+              showToast('已覆蓋舊紀錄並儲存成功！');
+              setEditingRecord(null);
+              setFormData({
+                ...formData,
+                notes: '',
+                eggs: getInitialEggsState(),
+                chickens: getInitialChickensState()
+              });
+            } else {
+              executeSaveRecord(finalEggsData, finalChickensData, finalMortality);
+            }
+          };
 
-        if (calculatedTotalEggs < minThreshold || calculatedTotalEggs > maxThreshold) {
-          const formattedRate = (eggProductiveRate * 100).toFixed(1);
-          setAlertModal({
-            show: true,
-            title: '⚠️ 產蛋產量異常安全警示',
-            message: `系統偵測到全場「台車 + 散箱」產蛋估算總量為 ${calculatedTotalEggs.toLocaleString()} 顆，佔總飼養雞隻數（${totalChickensCount.toLocaleString()} 隻）之產蛋率為 ${formattedRate}%。
+          if (calculatedTotalEggs < minThreshold || calculatedTotalEggs > maxThreshold) {
+            const formattedRate = (eggProductiveRate * 100).toFixed(1);
+            setAlertModal({
+              show: true,
+              title: '⚠️ 產蛋產量異常安全警示',
+              message: `系統偵測到全場「台車 + 散箱」產蛋估算總量為 ${calculatedTotalEggs.toLocaleString()} 顆，佔總飼養雞隻數（${totalChickensCount.toLocaleString()} 隻）之產蛋率為 ${formattedRate}%。
 
 【注意】本數據已超出安全標準區間（85% ~ 100%）。請核對現場申報數量是否有誤：
 1. 是否有台車數或散箱數輸入錯誤？
 2. 是否有漏勾選或多勾選現存蛋雞種類？`,
-            percentage: parseFloat(formattedRate),
-            totalEggs: calculatedTotalEggs,
-            totalChickens: totalChickensCount,
+              percentage: parseFloat(formattedRate),
+              totalEggs: calculatedTotalEggs,
+              totalChickens: totalChickensCount,
+              onConfirm: () => {
+                setAlertModal(prev => ({ ...prev, show: false }));
+                saveAction();
+              }
+            });
+          } else {
+            saveAction();
+          }
+        };
+
+        // 🔍 重複產蛋日篩選檢查 (同牧場 + 同日期)
+        const duplicate = records.find(r => r.ranch === formData.ranch && r.date === formData.date && r.id !== editingRecord);
+
+        if (duplicate) {
+          setDupModal({
+            show: true,
+            ranch: formData.ranch,
+            date: formData.date,
             onConfirm: () => {
-              setAlertModal(prev => ({ ...prev, show: false }));
-              executeSaveRecord(eggsData, chickensData, totalMortalityNum);
+              setDupModal(prev => ({ ...prev, show: false }));
+              proceedWithProductivityCheck(eggsData, chickensData, totalMortalityNum, true, duplicate.id);
             }
           });
         } else {
-          executeSaveRecord(eggsData, chickensData, totalMortalityNum);
+          proceedWithProductivityCheck(eggsData, chickensData, totalMortalityNum, false, null);
         }
+      };
+
+      // 執行上月資料清除
+      const handleClearPrevMonth = () => {
+        const pattern = clearanceModal.prevMonthPattern;
+        const beforeCount = records.length;
+        const afterRecords = records.filter(r => !r.date.startsWith(pattern));
+        const clearedCount = beforeCount - afterRecords.length;
+        
+        setRecords(afterRecords);
+        // 紀錄本月已清理過，防止今天重整再次彈出
+        localStorage.setItem('maosheng_gh_last_cleared_month_v2_8', clearanceModal.currentMonthKey);
+        showToast(`已成功清除 ${clearanceModal.prevMonthStr} 的歷史紀錄（共 ${clearedCount} 筆）！`, 'info');
+        setClearanceModal(prev => ({ ...prev, show: false }));
       };
 
       const handleDelete = (id) => {
@@ -644,53 +754,59 @@
         showToast(`已自名單移除：${name}`, 'info');
       };
 
+      // --- 產生 LINE 通知預覽文字 ---
       const generateNotificationText = (data) => {
         let eggDeclarationText = '';
         let grandTotalBoxes = 0;
         let grandTotalEggs = 0;
 
-        unlockedEggs.forEach(type => {
-          const egg = data.eggs[type];
-          const cartsVal = parseFloat(egg.carts) || 0;
-          const boxesVal = parseFloat(egg.boxes) || 0;
-          const trayBoxesVal = parseFloat(egg.trayBoxes) || 0;
+        if (unlockedEggs.length === 0) {
+          eggDeclarationText = '⚠️ 尚未填報今日產量（請先填入上方雞隻羽數解鎖蛋種）\n';
+        } else {
+          unlockedEggs.forEach(type => {
+            const egg = data.eggs[type];
+            const cartsVal = parseFloat(egg.carts) || 0;
+            const boxesVal = parseFloat(egg.boxes) || 0;
+            const trayBoxesVal = parseFloat(egg.trayBoxes) || 0;
 
-          const totalBoxes = (cartsVal * CART_TO_BOX_RATIO) + boxesVal + trayBoxesVal;
-          const totalEggs = Math.round((cartsVal * CART_TO_EGG_RATIO) + (boxesVal + trayBoxesVal) * BOX_TO_EGG_RATIO);
+            const totalBoxes = (cartsVal * CART_TO_BOX_RATIO) + boxesVal + trayBoxesVal;
+            const totalEggs = Math.round((cartsVal * CART_TO_EGG_RATIO) + (boxesVal + trayBoxesVal) * BOX_TO_EGG_RATIO);
 
-          grandTotalBoxes += totalBoxes;
-          grandTotalEggs += totalEggs;
+            grandTotalBoxes += totalBoxes;
+            grandTotalEggs += totalEggs;
 
-          if (cartsVal > 0 || boxesVal > 0 || trayBoxesVal > 0) {
             eggDeclarationText += `🥚 [${type}]：\n`;
             eggDeclarationText += `   ⁃ 產量：${cartsVal} 台車 / ${boxesVal} 箱散蛋 / ${trayBoxesVal} 箱盤蛋\n`;
             eggDeclarationText += `   ⁃ 折算：${totalBoxes.toFixed(1)} 箱 (約 ${totalEggs.toLocaleString()} 顆)\n`;
-          }
-        });
-
-        if (!eggDeclarationText) {
-          eggDeclarationText = '⚠️ 尚未填報今日產量（請先填入上方雞隻羽數解鎖蛋種）\n';
+          });
         }
 
         let chickenText = '';
         let mortalityText = '';
         let totalMortality = 0;
+        let totalChickensCount = 0;
 
         Object.keys(data.chickens).forEach(type => {
           const item = data.chickens[type];
-          if (item.checked && item.count) {
-            chickenText += ` ⁃ ${type}：${parseFloat(item.count).toLocaleString()} 隻\n`;
+          if (item.checked && item.count && parseFloat(item.count) > 0) {
+            const cCount = parseFloat(item.count) || 0;
+            totalChickensCount += cCount;
+            chickenText += ` ⁃ ${type}：${cCount.toLocaleString()} 隻\n`;
             
             const mort = parseInt(item.mortality, 10) || 0;
-            if (mort > 0) {
-               mortalityText += ` ⁃ ${type}：${mort} 隻\n`;
-               totalMortality += mort;
-            }
+            mortalityText += ` ⁃ ${type}：${mort} 隻\n`;
+            totalMortality += mort;
           }
         });
 
         if (!chickenText) chickenText = ' ⁃ 未填報今日羽數\n';
         if (!mortalityText) mortalityText = ' ⁃ 無異常\n';
+
+        let eggProductionRateText = '';
+        if (totalChickensCount > 0) {
+          const rate = ((grandTotalEggs / totalChickensCount) * 100).toFixed(1);
+          eggProductionRateText = `全場產蛋率：${rate}%\n`;
+        }
 
         return `【🌾 茂生契約牧場每日產量回報】
 ━━━━━━━━━━━━━━━━━━
@@ -703,7 +819,7 @@ ${chickenText}
 ${eggDeclarationText}----------------------------------
 全場折算總箱數：${grandTotalBoxes.toFixed(1)} 箱
 估算生產總顆數：約 ${grandTotalEggs.toLocaleString()} 顆
-💡 (折算標準：1台車 = 22箱 = 4320顆)
+${eggProductionRateText}💡 (折算標準：1台車=22箱=4320顆)
 
 💀 今日雞隻死亡數量 (總計 ${totalMortality} 隻)：
 ${mortalityText}
@@ -878,7 +994,7 @@ ${mortalityText}
       return (
         <div className="min-h-screen bg-slate-100 text-slate-800 font-sans pb-12">
           
-          {/* 產蛋率異常警示彈窗 */}
+          {/* 1. 產蛋率異常警示彈窗 */}
           {alertModal.show && (
             <div className="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
               <div className="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
@@ -929,6 +1045,107 @@ ${mortalityText}
                     >
                       數據無誤，強制儲存
                     </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 2. 產蛋日重複警示彈窗 (DupModal) */}
+          {dupModal.show && (
+            <div className="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+              <div className="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+                <div className="fixed inset-0 bg-slate-900/60 transition-opacity" onClick={() => setDupModal({ show: false, ranch: '', date: '', onConfirm: null })}></div>
+                <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+                
+                <div className="inline-block align-bottom bg-white rounded-3xl text-left overflow-hidden shadow-2xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full border border-amber-100">
+                  <div className="bg-amber-50 px-6 py-5 border-b border-amber-100 flex items-center gap-3">
+                    <div className="bg-amber-100 p-2 rounded-2xl text-amber-700">
+                      <svg className="w-6 h-6 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                    </div>
+                    <h3 className="text-lg font-black text-amber-800">⚠️ 產蛋日重複警示</h3>
+                  </div>
+                  <div className="px-6 py-6 space-y-4">
+                    <p className="text-sm text-slate-600 leading-relaxed font-bold">
+                      系統發現 <span className="text-emerald-700 font-extrabold">「{dupModal.ranch}」</span> 在 <span className="text-emerald-700 font-extrabold">「{dupModal.date}」</span> 已經存在一筆生產數據。
+                      <br /><br />
+                      請問您是否要<span className="text-red-600 font-black">【覆蓋】</span>此重複的歷史紀錄？
+                      <br />
+                      <span className="text-xs text-slate-400 font-semibold">* 注意：覆蓋後將刪除原先該日的產量資料，並寫入本次登載的新數據，本操作無法還原。</span>
+                    </p>
+                  </div>
+                  <div className="bg-slate-50 px-6 py-4 flex flex-col-reverse sm:flex-row justify-end gap-2.5 border-t border-slate-100">
+                    <button 
+                      type="button" 
+                      onClick={() => setDupModal({ show: false, ranch: '', date: '', onConfirm: null })}
+                      className="w-full sm:w-auto px-5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-50 transition-all shadow-xs"
+                    >
+                      取消並返回修改
+                    </button>
+                    <button 
+                      type="button" 
+                      onClick={dupModal.onConfirm}
+                      className="w-full sm:w-auto px-5 py-2.5 bg-amber-600 text-white rounded-xl text-xs font-black hover:bg-amber-700 transition-all shadow-md shadow-amber-200"
+                    >
+                      確認覆蓋舊資料
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 3. 每月 1 號例行備份與清除警示彈窗 (ClearanceModal) */}
+          {clearanceModal.show && (
+            <div className="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+              <div className="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+                <div className="fixed inset-0 bg-slate-900/60 transition-opacity"></div>
+                <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+                
+                <div className="inline-block align-bottom bg-white rounded-3xl text-left overflow-hidden shadow-2xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full border border-emerald-100">
+                  <div className="bg-emerald-50 px-6 py-5 border-b border-emerald-100 flex items-center gap-3">
+                    <div className="bg-emerald-100 p-2 rounded-2xl text-emerald-700">
+                      <svg className="w-6 h-6 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                      </svg>
+                    </div>
+                    <h3 className="text-lg font-black text-emerald-800">📅 每月1號例行清理提醒</h3>
+                  </div>
+                  <div className="px-6 py-6 space-y-4">
+                    <p className="text-sm text-slate-600 leading-relaxed font-bold">
+                      今天是 <span className="text-emerald-700 font-extrabold">{clearanceModal.currentDateStr}</span>，系統依契約安全規範，即將執行<span className="text-red-600 font-black">【清除上月份歷史紀錄】</span>的例行清理。
+                      <br /><br />
+                      本期將被清理的資料月份：<span className="text-amber-600 font-black">{clearanceModal.prevMonthStr}</span>
+                      <br /><br />
+                      為確保數據安全，<span className="text-emerald-700 font-extrabold">請務必先點選「立即匯出備份」</span>將生產紀錄存檔。確認存檔備份無誤後，再點選「確認並清除上月資料」。
+                    </p>
+                  </div>
+                  <div className="bg-slate-50 px-6 py-4 flex flex-col sm:flex-row justify-between gap-2.5 border-t border-slate-100">
+                    <button 
+                      type="button" 
+                      onClick={() => setClearanceModal(prev => ({ ...prev, show: false }))}
+                      className="w-full sm:w-auto px-4 py-2 border border-slate-300 rounded-xl text-xs font-bold text-slate-500 hover:bg-slate-100 transition-all"
+                    >
+                      稍後提醒我
+                    </button>
+                    <div className="flex gap-2 w-full sm:w-auto">
+                      <button 
+                        type="button" 
+                        onClick={handleExportCSV}
+                        className="w-full sm:w-auto px-4 py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-black hover:bg-emerald-700 transition-all shadow-md shadow-emerald-200"
+                      >
+                        立即匯出備份
+                      </button>
+                      <button 
+                        type="button" 
+                        onClick={handleClearPrevMonth}
+                        className="w-full sm:w-auto px-4 py-2.5 bg-red-600 text-white rounded-xl text-xs font-black hover:bg-red-700 transition-all shadow-md shadow-red-200"
+                      >
+                        確認並清除上月資料
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -992,6 +1209,23 @@ ${mortalityText}
               </nav>
             </div>
           </header>
+
+          {/* 獨立 Toast 提示 */}
+          {toast.show && (
+            <div className="fixed top-20 right-4 z-50 max-w-sm w-full bg-white shadow-2xl rounded-2xl border border-slate-200 p-4 flex items-center gap-3 transition-all duration-300 transform translate-y-0 animate-fadeIn">
+              <div className={`p-2.5 rounded-xl ${
+                toast.type === 'success' ? 'bg-emerald-100 text-emerald-700' :
+                toast.type === 'error' ? 'bg-red-100 text-red-700' : 'bg-sky-100 text-sky-700'
+              }`}>
+                {toast.type === 'success' ? (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" /></svg>
+                ) : (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
+                )}
+              </div>
+              <p className="text-xs sm:text-sm font-bold text-slate-700">{toast.message}</p>
+            </div>
+          )}
 
           {/* 主要內容區 */}
           <main className="max-w-6xl mx-auto px-4 mt-6">
@@ -1808,13 +2042,13 @@ ${mortalityText}
                     </h2>
                     <div className="space-y-3.5 text-xs text-slate-600 leading-relaxed font-bold">
                       <p>
-                        <strong>1. 蛋雞羽數與蛋種勾稽：</strong> 為避免現場人員誤登無關的蛋種產量，系統特別設計強制勾稽規則。只有當您選擇並輸入特定蛋雞羽數後，下方相對應的蛋種填報格才會帶出。
+                        <strong>1. 產蛋率異常預警機制：</strong> 當日全場蛋量（台車 * 4320 + 散箱 * 200）必須位於總飼養羽數之 85% ~ 100% 之間，若超出此範圍將在送出時觸發安全確認對話窗，以確保無抄寫或按鍵輸入失誤。
                       </p>
                       <p>
-                        <strong>2. 產蛋率異常預警機制：</strong> 當日全場蛋量（台車 * 4320 + 散箱 * 200）必須位於總飼養羽數之 85% ~ 100% 之間，若超出此範圍將在送出時觸發安全確認對話窗，以確保無抄寫或按鍵輸入失誤。
+                        <strong>2. 產蛋日重複防錯勾稽：</strong> 填報送出時若同牧場在同產蛋日已有紀錄，系統會彈出警示，讓您選擇是否直接「覆蓋舊紀錄」以避免重疊錯誤。
                       </p>
                       <p>
-                        <strong>3. 雞隻死亡動態回報：</strong> 將動態依據勾選的雞種，帶出各別輸入框來記錄死亡隻數，有效區隔不同雞群的健康狀況。
+                        <strong>3. 每月1號例行清理提醒：</strong> 每月1號系統會自動通知並引導匯出備份，隨後安全清理前一個月之舊生產檔案，維持系統流暢效能。
                       </p>
                       <p>
                         <strong>4. 數據完整離線儲存：</strong> 所有的資料均妥善保存於本機 LocalStorage 中，無任何對外傳輸之隱私疑慮。
@@ -1834,9 +2068,9 @@ ${mortalityText}
                           setRecords([]);
                           setRanches(DEFAULT_RANCHES);
                           setRanchMapping(INITIAL_RANCH_MAPPING);
-                          localStorage.removeItem('maosheng_gh_ranch_records_v2_5');
-                          localStorage.removeItem('maosheng_gh_ranch_list_v2_5');
-                          localStorage.removeItem('maosheng_gh_ranch_mapping_v2_5');
+                          localStorage.removeItem('maosheng_gh_ranch_records_v2_7');
+                          localStorage.removeItem('maosheng_gh_ranch_list_v2_7');
+                          localStorage.removeItem('maosheng_gh_ranch_mapping_v2_7');
                           showToast('歷史紀錄與設定值已成功還原為初始設定。', 'info');
                         }
                       }}
