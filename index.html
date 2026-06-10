@@ -1,644 +1,698 @@
-import React, { useState, useEffect, useMemo } from 'react';
-
-// 系統版本號與開發者資訊
-const VERSION = 'v2.6.0';
-const UPDATE_DATE = '2026-06-10';
-const DEVELOPER = '吳尚穎';
-
-// 茂生契約牧場預設名單
-const DEFAULT_RANCHES = [
-  '高秀', '隆記', '牧夏', '中將一', '中將二', 
-  '宏觀', '禾多', '富陞', '永瀠', '壹澤', 
-  '高昇', '高展', '顓承', '建發', '益禽', '嘉威'
-];
-
-// 預設牧場與型態配對關係
-const INITIAL_RANCH_MAPPING = {
-  '高秀': '密閉水簾場',
-  '隆記': '密閉水簾場',
-  '牧夏': '密閉水簾場',
-  '中將一': '密閉水簾場',
-  '中將二': '密閉水簾場',
-  '宏觀': '密閉水簾場',
-  '禾多': '密閉水簾場',
-  '富陞': '密閉水簾場',
-  '永瀠': '密閉水簾場',
-  '壹澤': '密閉水簾場',
-  '高昇': '傳統場',
-  '高展': '傳統場',
-  '顓承': '傳統場',
-  '建發': '傳統場',
-  '益禽': '傳統場',
-  '嘉威': '傳統場'
-};
-
-// 牧場型態選項
-const RANCH_TYPES = ['傳統場', '高床場', '密閉水簾場'];
-
-// 預設蛋種
-const EGG_TYPES = ['散白蛋', '機白蛋', '散紅蛋', '機紅蛋', '粉殼蛋', '綠殼蛋'];
-
-// 預設蛋雞類別
-const CHICKEN_TYPES = ['白雞', '紅雞', '土雞', '烏骨雞'];
-
-// 蛋雞與蛋種之勾稽連動關係
-const CHICKEN_TO_EGG_MAP = {
-  '白雞': ['散白蛋', '機白蛋'],
-  '紅雞': ['散紅蛋', '機紅蛋'],
-  '土雞': ['粉殼蛋'],
-  '烏骨雞': ['綠殼蛋']
-};
-
-// 計量與換算常數
-const CART_TO_BOX_RATIO = 22;
-const CART_TO_EGG_RATIO = 4320;
-const BOX_TO_EGG_RATIO = 4320 / 22; // 每箱約 196.36 顆
-const WARNING_BOX_TO_EGG_RATIO = 200; // 產蛋量異常警告計算：散蛋箱折算 200 顆
-
-// --- 輔支函式：確保 CSV 格式安全脫逸 ---
-const escapeCSV = (val) => {
-  if (val === undefined || val === null) return '""';
-  const stringVal = String(val);
-  return `"${stringVal.replace(/"/g, '""')}"`;
-};
-
-// --- 輔支函式：計算單筆紀錄的折算數據 ---
-const calculateEggTotals = (eggs, activeEggTypes) => {
-  let totalBoxes = 0;
-  let totalEggs = 0;
-  let totalCartsForWarning = 0;
-  let totalLooseBoxesForWarning = 0;
-
-  if (eggs) {
-    activeEggTypes.forEach(type => {
-      const egg = eggs[type];
-      if (egg) {
-        const carts = parseFloat(egg.carts) || 0;
-        const boxes = parseFloat(egg.boxes) || 0;
-        const trayBoxes = parseFloat(egg.trayBoxes) || 0;
-
-        totalBoxes += (carts * CART_TO_BOX_RATIO) + boxes + trayBoxes;
-        totalEggs += (carts * CART_TO_EGG_RATIO) + (boxes + trayBoxes) * BOX_TO_EGG_RATIO;
-        
-        totalCartsForWarning += carts;
-        totalLooseBoxesForWarning += boxes;
-      }
-    });
-  }
-
-  return {
-    totalBoxes,
-    totalEggs: Math.round(totalEggs),
-    totalCartsForWarning,
-    totalLooseBoxesForWarning
-  };
-};
-
-export default function App() {
-  // --- 1. 狀態管理 (使用新版 v2_5 的 Namespace) ---
-  const [ranches, setRanches] = useState(() => {
-    const saved = localStorage.getItem('maosheng_gh_ranch_list_v2_5');
-    return saved ? JSON.parse(saved) : DEFAULT_RANCHES;
-  });
-
-  const [ranchMapping, setRanchMapping] = useState(() => {
-    const saved = localStorage.getItem('maosheng_gh_ranch_mapping_v2_5');
-    return saved ? JSON.parse(saved) : INITIAL_RANCH_MAPPING;
-  });
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>茂生契約牧場產量紀錄 v2.6.0</title>
   
-  const [records, setRecords] = useState(() => {
-    const saved = localStorage.getItem('maosheng_gh_ranch_records_v2_5');
-    if (saved) return JSON.parse(saved);
-    
-    // 預設初始模擬資料
-    const today = new Date().toISOString().split('T')[0];
-    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-    return [
-      { 
-        id: '1', 
-        ranch: '高秀', 
-        ranchType: '密閉水簾場',
-        date: today, 
-        mortality: 2, // 此為歷史相容與全場圖表使用
-        notes: '產蛋情況良好，水簾運作正常維持25度。', 
-        eggs: { 
-          '散白蛋': { carts: 3, boxes: 5, trayBoxes: 2 }
-        },
-        chickens: { '白雞': { count: 15000, mortality: 2 } }
-      },
-      { 
-        id: '2', 
-        ranch: '中將一', 
-        ranchType: '密閉水簾場',
-        date: today, 
-        mortality: 4, 
-        notes: '自動化集蛋正常。', 
-        eggs: { 
-          '機白蛋': { carts: 5, boxes: 0, trayBoxes: 12 }
-        },
-        chickens: { '白雞': { count: 24000, mortality: 4 } }
-      },
-      { 
-        id: '3', 
-        ranch: '隆記', 
-        ranchType: '密閉水簾場',
-        date: yesterday, 
-        mortality: 1, 
-        notes: '', 
-        eggs: { 
-          '散紅蛋': { carts: 3, boxes: 15, trayBoxes: 8 }
-        },
-        chickens: { '紅雞': { count: 18000, mortality: 1 } }
-      }
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React & React-DOM CDNs (Production build) -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- Babel Standalone CDN (For compiling JSX in browser) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Google Fonts - Noto Sans TC -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+
+  <style>
+    body {
+      font-family: 'Noto Sans TC', sans-serif;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fadeIn {
+      animation: fadeIn 0.2s ease-out forwards;
+    }
+    /* 自訂捲軸樣式，讓手機與網頁排版更精緻 */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800">
+
+  <!-- React 掛載點 -->
+  <div id="root"></div>
+
+  <!-- React 應用程式本體 -->
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    // 系統版本號與開發者資訊
+    const VERSION = 'v2.6.0';
+    const UPDATE_DATE = '2026-06-10';
+    const DEVELOPER = '吳尚穎';
+
+    // 茂生契約牧場預設名單
+    const DEFAULT_RANCHES = [
+      '高秀', '隆記', '牧夏', '中將一', '中將二', 
+      '宏觀', '禾多', '富陞', '永瀠', '壹澤', 
+      '高昇', '高展', '顓承', '建發', '益禽', '嘉威'
     ];
-  });
 
-  // 初始化蛋種數量狀態
-  const getInitialEggsState = () => {
-    const state = {};
-    EGG_TYPES.forEach(type => {
-      state[type] = { carts: '', boxes: '', trayBoxes: '' };
-    });
-    return state;
-  };
+    // 預設牧場與型態配對關係
+    const INITIAL_RANCH_MAPPING = {
+      '高秀': '密閉水簾場',
+      '隆記': '密閉水簾場',
+      '牧夏': '密閉水簾場',
+      '中將一': '密閉水簾場',
+      '中將二': '密閉水簾場',
+      '宏觀': '密閉水簾場',
+      '禾多': '密閉水簾場',
+      '富陞': '密閉水簾場',
+      '永瀠': '密閉水簾場',
+      '壹澤': '密閉水簾場',
+      '高昇': '傳統場',
+      '高展': '傳統場',
+      '顓承': '傳統場',
+      '建發': '傳統場',
+      '益禽': '傳統場',
+      '嘉威': '傳統場'
+    };
 
-  // 初始化雞隻複選與羽數/死亡數狀態
-  const getInitialChickensState = () => {
-    const state = {};
-    CHICKEN_TYPES.forEach(type => {
-      state[type] = { checked: false, count: '', mortality: '' };
-    });
-    return state;
-  };
+    // 牧場型態選項
+    const RANCH_TYPES = ['傳統場', '高床場', '密閉水簾場'];
 
-  // 表單輸入狀態
-  const [formData, setFormData] = useState({
-    ranch: ranches[0] || '',
-    ranchType: INITIAL_RANCH_MAPPING[ranches[0]] || RANCH_TYPES[0],
-    date: new Date().toISOString().split('T')[0], // 產蛋日
-    notes: '',      // 現場備註
-    eggs: getInitialEggsState(),      
-    chickens: getInitialChickensState() 
-  });
+    // 預設蛋種
+    const EGG_TYPES = ['散白蛋', '機白蛋', '散紅蛋', '機紅蛋', '粉殼蛋', '綠殼蛋'];
 
-  // UI 控制狀態
-  const [activeTab, setActiveTab] = useState('input'); // input, history, analytics, settings
-  const [newRanchName, setNewRanchName] = useState('');
-  const [newRanchType, setNewRanchType] = useState('傳統場');
-  const [filterRanch, setFilterRanch] = useState('all');
-  const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
-  const [editingRecord, setEditingRecord] = useState(null);
+    // 預設蛋雞類別
+    const CHICKEN_TYPES = ['白雞', '紅雞', '土雞', '烏骨雞'];
 
-  // 產蛋率異常警示彈窗 (Modal)
-  const [alertModal, setAlertModal] = useState({
-    show: false,
-    title: '',
-    message: '',
-    percentage: 0,
-    totalEggs: 0,
-    totalChickens: 0,
-    onConfirm: null
-  });
+    // 蛋雞與蛋種之勾稽連動關係
+    const CHICKEN_TO_EGG_MAP = {
+      '白雞': ['散白蛋', '機白蛋'],
+      '紅雞': ['散紅蛋', '機紅蛋'],
+      '土雞': ['粉殼蛋'],
+      '烏骨雞': ['綠殼蛋']
+    };
 
-  // --- 2. 核心記憶化計算 (useMemo) ---
-  
-  const filteredRecords = useMemo(() => {
-    return filterRanch === 'all' 
-      ? records 
-      : records.filter(r => r.ranch === filterRanch);
-  }, [records, filterRanch]);
+    // 計量與換算常數
+    const CART_TO_BOX_RATIO = 22;
+    const CART_TO_EGG_RATIO = 4320;
+    const BOX_TO_EGG_RATIO = 4320 / 22; // 每箱約 196.36 顆
+    const WARNING_BOX_TO_EGG_RATIO = 200; // 產蛋量異常警告計算：散蛋箱折算 200 顆
 
-  const stats = useMemo(() => {
-    let totalCarts = 0;
-    let totalBoxes = 0;
-    let totalTrayBoxes = 0;
-    let totalConvertedBoxes = 0;
-    let totalEggsCalculated = 0;
-    let totalMortality = 0;
+    // --- 輔助函式：確保 CSV 格式安全脫逸 ---
+    const escapeCSV = (val) => {
+      if (val === undefined || val === null) return '""';
+      const stringVal = String(val);
+      return `"${stringVal.replace(/"/g, '""')}"`;
+    };
 
-    filteredRecords.forEach(rec => {
-      const { totalBoxes: recBoxes, totalEggs: recEggs } = calculateEggTotals(rec.eggs, EGG_TYPES);
-      totalConvertedBoxes += recBoxes;
-      totalEggsCalculated += recEggs;
+    // --- 輔助函式：計算單筆紀錄的折算數據 ---
+    const calculateEggTotals = (eggs, activeEggTypes) => {
+      let totalBoxes = 0;
+      let totalEggs = 0;
+      let totalCartsForWarning = 0;
+      let totalLooseBoxesForWarning = 0;
 
-      if (rec.eggs) {
-        EGG_TYPES.forEach(type => {
-          const egg = rec.eggs[type];
+      if (eggs) {
+        activeEggTypes.forEach(type => {
+          const egg = eggs[type];
           if (egg) {
-            totalCarts += egg.carts || 0;
-            totalBoxes += egg.boxes || 0;
-            totalTrayBoxes += egg.trayBoxes || 0;
+            const carts = parseFloat(egg.carts) || 0;
+            const boxes = parseFloat(egg.boxes) || 0;
+            const trayBoxes = parseFloat(egg.trayBoxes) || 0;
+
+            totalBoxes += (carts * CART_TO_BOX_RATIO) + boxes + trayBoxes;
+            totalEggs += (carts * CART_TO_EGG_RATIO) + (boxes + trayBoxes) * BOX_TO_EGG_RATIO;
+            
+            totalCartsForWarning += carts;
+            totalLooseBoxesForWarning += boxes;
           }
         });
       }
-      totalMortality += rec.mortality || 0;
-    });
 
-    const avgMortality = filteredRecords.length ? (totalMortality / filteredRecords.length).toFixed(1) : 0;
-
-    return {
-      totalCarts,
-      totalBoxes,
-      totalTrayBoxes,
-      totalConvertedBoxes,
-      totalEggsCalculated,
-      totalMortality,
-      avgMortality,
-      recordCount: filteredRecords.length
+      return {
+        totalBoxes,
+        totalEggs: Math.round(totalEggs),
+        totalCartsForWarning,
+        totalLooseBoxesForWarning
+      };
     };
-  }, [filteredRecords]);
 
-  const sortedRecords = useMemo(() => {
-    return [...filteredRecords].sort((a, b) => new Date(a.date) - new Date(b.date));
-  }, [filteredRecords]);
+    function App() {
+      // --- 狀態管理 (使用專屬 GitHub Namespace 防範同網域快取碰撞) ---
+      const [ranches, setRanches] = useState(() => {
+        const saved = localStorage.getItem('maosheng_gh_ranch_list_v2_5');
+        return saved ? JSON.parse(saved) : DEFAULT_RANCHES;
+      });
 
-  // --- 3. 副作用處理 (LocalStorage 同步) ---
-  useEffect(() => {
-    localStorage.setItem('maosheng_gh_ranch_records_v2_5', JSON.stringify(records));
-  }, [records]);
-
-  useEffect(() => {
-    localStorage.setItem('maosheng_gh_ranch_list_v2_5', JSON.stringify(ranches));
-    localStorage.setItem('maosheng_gh_ranch_mapping_v2_5', JSON.stringify(ranchMapping));
-  }, [ranches, ranchMapping]);
-
-  // --- 4. 功能性處理函式 ---
-
-  const showToast = (message, type = 'success') => {
-    setToast({ show: true, message, type });
-    setTimeout(() => {
-      setToast({ show: false, message: '', type: 'success' });
-    }, 3000);
-  };
-
-  const handleRanchNameChange = (e) => {
-    const selectedRanch = e.target.value;
-    const mappedType = ranchMapping[selectedRanch] || RANCH_TYPES[0];
-    setFormData(prev => ({
-      ...prev,
-      ranch: selectedRanch,
-      ranchType: mappedType
-    }));
-  };
-
-  const handleInputChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
-  };
-
-  const handleEggQtyChange = (type, field, value) => {
-    setFormData(prev => {
-      const current = prev.eggs[type];
-      return {
-        ...prev,
-        eggs: {
-          ...prev.eggs,
-          [type]: { ...current, [field]: value }
-        }
-      };
-    });
-  };
-
-  const handleChickenCheckboxChange = (type) => {
-    setFormData(prev => {
-      const current = prev.chickens[type];
-      const isChecked = !current.checked;
-      return {
-        ...prev,
-        chickens: {
-          ...prev.chickens,
-          [type]: { 
-            ...current, 
-            checked: isChecked, 
-            count: isChecked ? current.count : '',
-            mortality: isChecked ? current.mortality : ''
-          }
-        }
-      };
-    });
-  };
-
-  const handleChickenCountChange = (type, value) => {
-    setFormData(prev => {
-      const current = prev.chickens[type];
-      return {
-        ...prev,
-        chickens: {
-          ...prev.chickens,
-          [type]: { ...current, count: value }
-        }
-      };
-    });
-  };
-
-  // 處理雞隻死亡數量變更
-  const handleChickenMortalityChange = (type, value) => {
-    setFormData(prev => {
-      const current = prev.chickens[type];
-      return {
-        ...prev,
-        chickens: {
-          ...prev.chickens,
-          [type]: { ...current, mortality: value }
-        }
-      };
-    });
-  };
-
-  const getUnlockedEggTypes = () => {
-    const unlocked = [];
-    Object.keys(formData.chickens).forEach(chickenType => {
-      const item = formData.chickens[chickenType];
-      if (item.checked && item.count && parseFloat(item.count) > 0) {
-        const mappedEggs = CHICKEN_TO_EGG_MAP[chickenType] || [];
-        unlocked.push(...mappedEggs);
-      }
-    });
-    return unlocked;
-  };
-
-  const unlockedEggs = getUnlockedEggTypes();
-
-  const executeSaveRecord = (eggsData, chickensData, totalMortalityNum) => {
-    if (editingRecord) {
-      setRecords(records.map(rec => rec.id === editingRecord ? {
-        ...rec,
-        ranch: formData.ranch,
-        ranchType: formData.ranchType,
-        date: formData.date,
-        mortality: totalMortalityNum, // 保留總合供圖表使用
-        notes: formData.notes,
-        ratio: CART_TO_BOX_RATIO,
-        eggs: eggsData,
-        chickens: chickensData
-      } : rec));
-      showToast('產量紀錄已順利更新！');
-      setEditingRecord(null);
-    } else {
-      const newRecord = {
-        id: Date.now().toString(),
-        ranch: formData.ranch,
-        ranchType: formData.ranchType,
-        date: formData.date,
-        mortality: totalMortalityNum, // 保留總合供圖表使用
-        notes: formData.notes,
-        ratio: CART_TO_BOX_RATIO,
-        eggs: eggsData,
-        chickens: chickensData
-      };
-      setRecords([newRecord, ...records]);
-      showToast('產量紀錄儲存成功！');
-    }
-
-    setFormData({
-      ...formData,
-      notes: '',
-      eggs: getInitialEggsState(),
-      chickens: getInitialChickensState()
-    });
-  };
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (!formData.ranch) {
-      showToast('請先選擇或新增牧場！', 'error');
-      return;
-    }
-
-    const chickensData = {};
-    let totalChickensCount = 0;
-    let totalMortalityNum = 0;
-    let hasChickenFilled = false;
-    let hasNegativeMortality = false;
-
-    Object.keys(formData.chickens).forEach(type => {
-      const item = formData.chickens[type];
-      if (item.checked && item.count) {
-        hasChickenFilled = true;
-        const countVal = parseFloat(item.count) || 0;
-        const mortVal = parseInt(item.mortality, 10) || 0;
-        
-        if (mortVal < 0) hasNegativeMortality = true;
-
-        chickensData[type] = { count: countVal, mortality: mortVal };
-        totalChickensCount += countVal;
-        totalMortalityNum += mortVal;
-      }
-    });
-
-    if (hasNegativeMortality) {
-      showToast('死亡數量不能為負數！', 'error');
-      return;
-    }
-
-    if (!hasChickenFilled) {
-      showToast('請至少選擇並填入一種蛋雞的數量！', 'error');
-      return;
-    }
-
-    const eggsData = {};
-    let hasSelectedEggQty = false;
-    let totalCartsCount = 0;
-    let totalLooseBoxesCount = 0;
-    
-    unlockedEggs.forEach(type => {
-      const eggState = formData.eggs[type];
-      const cartsVal = parseFloat(eggState.carts) || 0;
-      const boxesVal = parseFloat(eggState.boxes) || 0;
-      const trayBoxesVal = parseFloat(eggState.trayBoxes) || 0;
-
-      if (cartsVal > 0 || boxesVal > 0 || trayBoxesVal > 0) {
-        hasSelectedEggQty = true;
-      }
+      const [ranchMapping, setRanchMapping] = useState(() => {
+        const saved = localStorage.getItem('maosheng_gh_ranch_mapping_v2_5');
+        return saved ? JSON.parse(saved) : INITIAL_RANCH_MAPPING;
+      });
       
-      eggsData[type] = {
-        carts: cartsVal,
-        boxes: boxesVal,
-        trayBoxes: trayBoxesVal
+      const [records, setRecords] = useState(() => {
+        const saved = localStorage.getItem('maosheng_gh_ranch_records_v2_5');
+        if (saved) return JSON.parse(saved);
+        
+        // 預設初始模擬資料
+        const today = new Date().toISOString().split('T')[0];
+        const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+        return [
+          { 
+            id: '1', 
+            ranch: '高秀', 
+            ranchType: '密閉水簾場',
+            date: today, 
+            mortality: 2, 
+            notes: '產蛋情況良好，水簾運作正常維持25度。', 
+            eggs: { 
+              '散白蛋': { carts: 3, boxes: 5, trayBoxes: 2 }
+            },
+            chickens: { '白雞': { count: 15000, mortality: 2 } }
+          },
+          { 
+            id: '2', 
+            ranch: '中將一', 
+            ranchType: '密閉水簾場',
+            date: today, 
+            mortality: 4, 
+            notes: '自動化集蛋正常。', 
+            eggs: { 
+              '機白蛋': { carts: 5, boxes: 0, trayBoxes: 12 }
+            },
+            chickens: { '白雞': { count: 24000, mortality: 4 } }
+          },
+          { 
+            id: '3', 
+            ranch: '隆記', 
+            ranchType: '密閉水簾場',
+            date: yesterday, 
+            mortality: 1, 
+            notes: '', 
+            eggs: { 
+              '散紅蛋': { carts: 3, boxes: 15, trayBoxes: 8 }
+            },
+            chickens: { '紅雞': { count: 18000, mortality: 1 } }
+          }
+        ];
+      });
+
+      // 初始化蛋種數量狀態
+      const getInitialEggsState = () => {
+        const state = {};
+        EGG_TYPES.forEach(type => {
+          state[type] = { carts: '', boxes: '', trayBoxes: '' };
+        });
+        return state;
       };
 
-      totalCartsCount += cartsVal;
-      totalLooseBoxesCount += boxesVal;
-    });
+      // 初始化雞隻複選與羽數/死亡數狀態
+      const getInitialChickensState = () => {
+        const state = {};
+        CHICKEN_TYPES.forEach(type => {
+          state[type] = { checked: false, count: '', mortality: '' };
+        });
+        return state;
+      };
 
-    if (!hasSelectedEggQty) {
-      showToast('請在解鎖的蛋種中，至少填入一項產蛋數量！', 'error');
-      return;
-    }
+      // 表單輸入狀態
+      const [formData, setFormData] = useState({
+        ranch: ranches[0] || '',
+        ranchType: INITIAL_RANCH_MAPPING[ranches[0]] || RANCH_TYPES[0],
+        date: new Date().toISOString().split('T')[0], // 產蛋日
+        notes: '',      // 現場備註
+        eggs: getInitialEggsState(),      
+        chickens: getInitialChickensState() 
+      });
 
-    // 驗證產蛋率安全區間（85% ~ 100%）
-    const calculatedTotalEggs = (totalCartsCount * CART_TO_EGG_RATIO) + (totalLooseBoxesCount * WARNING_BOX_TO_EGG_RATIO);
-    const eggProductiveRate = totalChickensCount > 0 ? (calculatedTotalEggs / totalChickensCount) : 0;
-    const minThreshold = totalChickensCount * 0.85;
-    const maxThreshold = totalChickensCount;
+      // UI 控制狀態
+      const [activeTab, setActiveTab] = useState('input'); // input, history, analytics, settings
+      const [newRanchName, setNewRanchName] = useState('');
+      const [newRanchType, setNewRanchType] = useState('傳統場');
+      const [filterRanch, setFilterRanch] = useState('all');
+      const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
+      const [editingRecord, setEditingRecord] = useState(null);
 
-    if (calculatedTotalEggs < minThreshold || calculatedTotalEggs > maxThreshold) {
-      const formattedRate = (eggProductiveRate * 100).toFixed(1);
-      setAlertModal({
-        show: true,
-        title: '⚠️ 產蛋產量異常安全警示',
-        message: `系統偵測到全場「台車 + 散箱」產蛋估算總量為 ${calculatedTotalEggs.toLocaleString()} 顆，佔總飼養雞隻數（${totalChickensCount.toLocaleString()} 隻）之產蛋率為 ${formattedRate}%。
+      // 產蛋率異常警示彈窗 (Modal)
+      const [alertModal, setAlertModal] = useState({
+        show: false,
+        title: '',
+        message: '',
+        percentage: 0,
+        totalEggs: 0,
+        totalChickens: 0,
+        onConfirm: null
+      });
+
+      // --- 2. 核心記憶化計算 (useMemo) ---
+      
+      const filteredRecords = useMemo(() => {
+        return filterRanch === 'all' 
+          ? records 
+          : records.filter(r => r.ranch === filterRanch);
+      }, [records, filterRanch]);
+
+      const stats = useMemo(() => {
+        let totalCarts = 0;
+        let totalBoxes = 0;
+        let totalTrayBoxes = 0;
+        let totalConvertedBoxes = 0;
+        let totalEggsCalculated = 0;
+        let totalMortality = 0;
+
+        filteredRecords.forEach(rec => {
+          const { totalBoxes: recBoxes, totalEggs: recEggs } = calculateEggTotals(rec.eggs, EGG_TYPES);
+          totalConvertedBoxes += recBoxes;
+          totalEggsCalculated += recEggs;
+
+          if (rec.eggs) {
+            EGG_TYPES.forEach(type => {
+              const egg = rec.eggs[type];
+              if (egg) {
+                totalCarts += egg.carts || 0;
+                totalBoxes += egg.boxes || 0;
+                totalTrayBoxes += egg.trayBoxes || 0;
+              }
+            });
+          }
+          totalMortality += rec.mortality || 0;
+        });
+
+        const avgMortality = filteredRecords.length ? (totalMortality / filteredRecords.length).toFixed(1) : 0;
+
+        return {
+          totalCarts,
+          totalBoxes,
+          totalTrayBoxes,
+          totalConvertedBoxes,
+          totalEggsCalculated,
+          totalMortality,
+          avgMortality,
+          recordCount: filteredRecords.length
+        };
+      }, [filteredRecords]);
+
+      const sortedRecords = useMemo(() => {
+        return [...filteredRecords].sort((a, b) => new Date(a.date) - new Date(b.date));
+      }, [filteredRecords]);
+
+      // --- 3. 副作用處理 (LocalStorage 同步) ---
+      useEffect(() => {
+        localStorage.setItem('maosheng_gh_ranch_records_v2_5', JSON.stringify(records));
+      }, [records]);
+
+      useEffect(() => {
+        localStorage.setItem('maosheng_gh_ranch_list_v2_5', JSON.stringify(ranches));
+        localStorage.setItem('maosheng_gh_ranch_mapping_v2_5', JSON.stringify(ranchMapping));
+      }, [ranches, ranchMapping]);
+
+      // --- 4. 功能性處理函式 ---
+
+      const showToast = (message, type = 'success') => {
+        setToast({ show: true, message, type });
+        setTimeout(() => {
+          setToast({ show: false, message: '', type: 'success' });
+        }, 3000);
+      };
+
+      const handleRanchNameChange = (e) => {
+        const selectedRanch = e.target.value;
+        const mappedType = ranchMapping[selectedRanch] || RANCH_TYPES[0];
+        setFormData(prev => ({
+          ...prev,
+          ranch: selectedRanch,
+          ranchType: mappedType
+        }));
+      };
+
+      const handleInputChange = (e) => {
+        const { name, value } = e.target;
+        setFormData(prev => ({
+          ...prev,
+          [name]: value
+        }));
+      };
+
+      const handleEggQtyChange = (type, field, value) => {
+        setFormData(prev => {
+          const current = prev.eggs[type];
+          return {
+            ...prev,
+            eggs: {
+              ...prev.eggs,
+              [type]: { ...current, [field]: value }
+            }
+          };
+        });
+      };
+
+      const handleChickenCheckboxChange = (type) => {
+        setFormData(prev => {
+          const current = prev.chickens[type];
+          const isChecked = !current.checked;
+          return {
+            ...prev,
+            chickens: {
+              ...prev.chickens,
+              [type]: { 
+                ...current, 
+                checked: isChecked, 
+                count: isChecked ? current.count : '',
+                mortality: isChecked ? current.mortality : ''
+              }
+            }
+          };
+        });
+      };
+
+      const handleChickenCountChange = (type, value) => {
+        setFormData(prev => {
+          const current = prev.chickens[type];
+          return {
+            ...prev,
+            chickens: {
+              ...prev.chickens,
+              [type]: { ...current, count: value }
+            }
+          };
+        });
+      };
+
+      const handleChickenMortalityChange = (type, value) => {
+        setFormData(prev => {
+          const current = prev.chickens[type];
+          return {
+            ...prev,
+            chickens: {
+              ...prev.chickens,
+              [type]: { ...current, mortality: value }
+            }
+          };
+        });
+      };
+
+      const getUnlockedEggTypes = () => {
+        const unlocked = [];
+        Object.keys(formData.chickens).forEach(chickenType => {
+          const item = formData.chickens[chickenType];
+          if (item.checked && item.count && parseFloat(item.count) > 0) {
+            const mappedEggs = CHICKEN_TO_EGG_MAP[chickenType] || [];
+            unlocked.push(...mappedEggs);
+          }
+        });
+        return unlocked;
+      };
+
+      const unlockedEggs = getUnlockedEggTypes();
+
+      const executeSaveRecord = (eggsData, chickensData, totalMortalityNum) => {
+        if (editingRecord) {
+          setRecords(records.map(rec => rec.id === editingRecord ? {
+            ...rec,
+            ranch: formData.ranch,
+            ranchType: formData.ranchType,
+            date: formData.date,
+            mortality: totalMortalityNum, 
+            notes: formData.notes,
+            ratio: CART_TO_BOX_RATIO,
+            eggs: eggsData,
+            chickens: chickensData
+          } : rec));
+          showToast('產量紀錄已順利更新！');
+          setEditingRecord(null);
+        } else {
+          const newRecord = {
+            id: Date.now().toString(),
+            ranch: formData.ranch,
+            ranchType: formData.ranchType,
+            date: formData.date,
+            mortality: totalMortalityNum, 
+            notes: formData.notes,
+            ratio: CART_TO_BOX_RATIO,
+            eggs: eggsData,
+            chickens: chickensData
+          };
+          setRecords([newRecord, ...records]);
+          showToast('產量紀錄儲存成功！');
+        }
+
+        setFormData({
+          ...formData,
+          notes: '',
+          eggs: getInitialEggsState(),
+          chickens: getInitialChickensState()
+        });
+      };
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!formData.ranch) {
+          showToast('請先選擇或新增牧場！', 'error');
+          return;
+        }
+
+        const chickensData = {};
+        let totalChickensCount = 0;
+        let totalMortalityNum = 0;
+        let hasChickenFilled = false;
+        let hasNegativeMortality = false;
+
+        Object.keys(formData.chickens).forEach(type => {
+          const item = formData.chickens[type];
+          if (item.checked && item.count) {
+            hasChickenFilled = true;
+            const countVal = parseFloat(item.count) || 0;
+            const mortVal = parseInt(item.mortality, 10) || 0;
+            
+            if (mortVal < 0) hasNegativeMortality = true;
+
+            chickensData[type] = { count: countVal, mortality: mortVal };
+            totalChickensCount += countVal;
+            totalMortalityNum += mortVal;
+          }
+        });
+
+        if (hasNegativeMortality) {
+          showToast('死亡數量不能為負數！', 'error');
+          return;
+        }
+
+        if (!hasChickenFilled) {
+          showToast('請至少選擇並填入一種蛋雞的數量！', 'error');
+          return;
+        }
+
+        const eggsData = {};
+        let hasSelectedEggQty = false;
+        let totalCartsCount = 0;
+        let totalLooseBoxesCount = 0;
+        
+        unlockedEggs.forEach(type => {
+          const eggState = formData.eggs[type];
+          const cartsVal = parseFloat(eggState.carts) || 0;
+          const boxesVal = parseFloat(eggState.boxes) || 0;
+          const trayBoxesVal = parseFloat(eggState.trayBoxes) || 0;
+
+          if (cartsVal > 0 || boxesVal > 0 || trayBoxesVal > 0) {
+            hasSelectedEggQty = true;
+          }
+          
+          eggsData[type] = {
+            carts: cartsVal,
+            boxes: boxesVal,
+            trayBoxes: trayBoxesVal
+          };
+
+          totalCartsCount += cartsVal;
+          totalLooseBoxesCount += boxesVal;
+        });
+
+        if (!hasSelectedEggQty) {
+          showToast('請在解鎖的蛋種中，至少填入一項產蛋數量！', 'error');
+          return;
+        }
+
+        const calculatedTotalEggs = (totalCartsCount * CART_TO_EGG_RATIO) + (totalLooseBoxesCount * WARNING_BOX_TO_EGG_RATIO);
+        const eggProductiveRate = totalChickensCount > 0 ? (calculatedTotalEggs / totalChickensCount) : 0;
+        const minThreshold = totalChickensCount * 0.85;
+        const maxThreshold = totalChickensCount;
+
+        if (calculatedTotalEggs < minThreshold || calculatedTotalEggs > maxThreshold) {
+          const formattedRate = (eggProductiveRate * 100).toFixed(1);
+          setAlertModal({
+            show: true,
+            title: '⚠️ 產蛋產量異常安全警示',
+            message: `系統偵測到全場「台車 + 散箱」產蛋估算總量為 ${calculatedTotalEggs.toLocaleString()} 顆，佔總飼養雞隻數（${totalChickensCount.toLocaleString()} 隻）之產蛋率為 ${formattedRate}%。
 
 【注意】本數據已超出安全標準區間（85% ~ 100%）。請核對現場申報數量是否有誤：
 1. 是否有台車數或散箱數輸入錯誤？
 2. 是否有漏勾選或多勾選現存蛋雞種類？`,
-        percentage: parseFloat(formattedRate),
-        totalEggs: calculatedTotalEggs,
-        totalChickens: totalChickensCount,
-        onConfirm: () => {
-          setAlertModal(prev => ({ ...prev, show: false }));
+            percentage: parseFloat(formattedRate),
+            totalEggs: calculatedTotalEggs,
+            totalChickens: totalChickensCount,
+            onConfirm: () => {
+              setAlertModal(prev => ({ ...prev, show: false }));
+              executeSaveRecord(eggsData, chickensData, totalMortalityNum);
+            }
+          });
+        } else {
           executeSaveRecord(eggsData, chickensData, totalMortalityNum);
         }
-      });
-    } else {
-      executeSaveRecord(eggsData, chickensData, totalMortalityNum);
-    }
-  };
+      };
 
-  const handleDelete = (id) => {
-    setRecords(records.filter(rec => rec.id !== id));
-    showToast('紀錄已成功刪除！', 'info');
-  };
+      const handleDelete = (id) => {
+        setRecords(records.filter(rec => rec.id !== id));
+        showToast('紀錄已成功刪除！', 'info');
+      };
 
-  const handleEditInit = (record) => {
-    setEditingRecord(record.id);
-    
-    const chickensState = getInitialChickensState();
-    if (record.chickens) {
-      Object.keys(record.chickens).forEach(type => {
-        if (chickensState[type]) {
-          chickensState[type].checked = true;
-          // 相容舊版資料與新版物件結構
-          const chickenData = record.chickens[type];
-          if (typeof chickenData === 'object' && chickenData !== null) {
-             chickensState[type].count = chickenData.count || '';
-             chickensState[type].mortality = chickenData.mortality !== undefined ? chickenData.mortality : '';
-          } else {
-             chickensState[type].count = chickenData || '';
-             chickensState[type].mortality = '';
-          }
-        }
-      });
-    }
-
-    const eggsState = getInitialEggsState();
-    if (record.eggs) {
-      Object.keys(record.eggs).forEach(type => {
-        if (eggsState[type]) {
-          eggsState[type].carts = record.eggs[type].carts || '';
-          eggsState[type].boxes = record.eggs[type].boxes || '';
-          eggsState[type].trayBoxes = record.eggs[type].trayBoxes || '';
-        }
-      });
-    }
-
-    setFormData({
-      ranch: record.ranch,
-      ranchType: record.ranchType || RANCH_TYPES[0],
-      date: record.date,
-      notes: record.notes,
-      eggs: eggsState,
-      chickens: chickensState
-    });
-    
-    setActiveTab('input');
-    showToast('已載入欲編輯的產量資料', 'info');
-  };
-
-  const handleAddRanch = (e) => {
-    e.preventDefault();
-    const trimmedName = newRanchName.trim();
-    if (!trimmedName) return;
-    if (ranches.includes(trimmedName)) {
-      showToast('此牧場已在名單中！', 'error');
-      return;
-    }
-    
-    setRanches([...ranches, trimmedName]);
-    setRanchMapping(prev => ({
-      ...prev,
-      [trimmedName]: newRanchType
-    }));
-
-    setFormData(prev => ({
-      ...prev,
-      ranch: trimmedName,
-      ranchType: newRanchType
-    }));
-
-    setNewRanchName('');
-    showToast(`已新增契約牧場：${trimmedName} (${newRanchType})`);
-  };
-
-  const handleDeleteRanch = (name) => {
-    setRanches(ranches.filter(r => r !== name));
-    const newMapping = { ...ranchMapping };
-    delete newMapping[name];
-    setRanchMapping(newMapping);
-
-    if (formData.ranch === name) {
-      const fallbackRanch = ranches[0] || '';
-      setFormData(prev => ({
-        ...prev,
-        ranch: fallbackRanch,
-        ranchType: ranchMapping[fallbackRanch] || RANCH_TYPES[0]
-      }));
-    }
-    showToast(`已自名單移除：${name}`, 'info');
-  };
-
-  const generateNotificationText = (data) => {
-    let eggDeclarationText = '';
-    let grandTotalBoxes = 0;
-    let grandTotalEggs = 0;
-
-    unlockedEggs.forEach(type => {
-      const egg = data.eggs[type];
-      const cartsVal = parseFloat(egg.carts) || 0;
-      const boxesVal = parseFloat(egg.boxes) || 0;
-      const trayBoxesVal = parseFloat(egg.trayBoxes) || 0;
-
-      const totalBoxes = (cartsVal * CART_TO_BOX_RATIO) + boxesVal + trayBoxesVal;
-      const totalEggs = Math.round((cartsVal * CART_TO_EGG_RATIO) + (boxesVal + trayBoxesVal) * BOX_TO_EGG_RATIO);
-
-      grandTotalBoxes += totalBoxes;
-      grandTotalEggs += totalEggs;
-
-      if (cartsVal > 0 || boxesVal > 0 || trayBoxesVal > 0) {
-        eggDeclarationText += `🥚 [${type}]：\n`;
-        eggDeclarationText += `   ⁃ 產量：${cartsVal} 台車 / ${boxesVal} 箱散蛋 / ${trayBoxesVal} 箱盤蛋\n`;
-        eggDeclarationText += `   ⁃ 折算：${totalBoxes.toFixed(1)} 箱 (約 ${totalEggs.toLocaleString()} 顆)\n`;
-      }
-    });
-
-    if (!eggDeclarationText) {
-      eggDeclarationText = '⚠️ 尚未填報今日產量（請先填入上方雞隻羽數解鎖蛋種）\n';
-    }
-
-    let chickenText = '';
-    let mortalityText = '';
-    let totalMortality = 0;
-
-    Object.keys(data.chickens).forEach(type => {
-      const item = data.chickens[type];
-      if (item.checked && item.count) {
-        chickenText += ` ⁃ ${type}：${parseFloat(item.count).toLocaleString()} 隻\n`;
+      const handleEditInit = (record) => {
+        setEditingRecord(record.id);
         
-        const mort = parseInt(item.mortality, 10) || 0;
-        if (mort > 0) {
-           mortalityText += ` ⁃ ${type}：${mort} 隻\n`;
-           totalMortality += mort;
+        const chickensState = getInitialChickensState();
+        if (record.chickens) {
+          Object.keys(record.chickens).forEach(type => {
+            if (chickensState[type]) {
+              chickensState[type].checked = true;
+              const chickenData = record.chickens[type];
+              if (typeof chickenData === 'object' && chickenData !== null) {
+                 chickensState[type].count = chickenData.count || '';
+                 chickensState[type].mortality = chickenData.mortality !== undefined ? chickenData.mortality : '';
+              } else {
+                 chickensState[type].count = chickenData || '';
+                 chickensState[type].mortality = '';
+              }
+            }
+          });
         }
-      }
-    });
 
-    if (!chickenText) chickenText = ' ⁃ 未填報今日羽數\n';
-    if (!mortalityText) mortalityText = ' ⁃ 無異常\n';
+        const eggsState = getInitialEggsState();
+        if (record.eggs) {
+          Object.keys(record.eggs).forEach(type => {
+            if (eggsState[type]) {
+              eggsState[type].carts = record.eggs[type].carts || '';
+              eggsState[type].boxes = record.eggs[type].boxes || '';
+              eggsState[type].trayBoxes = record.eggs[type].trayBoxes || '';
+            }
+          });
+        }
 
-    return `【🌾 茂生契約牧場每日產量回報】
+        setFormData({
+          ranch: record.ranch,
+          ranchType: record.ranchType || RANCH_TYPES[0],
+          date: record.date,
+          notes: record.notes,
+          eggs: eggsState,
+          chickens: chickensState
+        });
+        
+        setActiveTab('input');
+        showToast('已載入欲編輯的產量資料', 'info');
+      };
+
+      const handleAddRanch = (e) => {
+        e.preventDefault();
+        const trimmedName = newRanchName.trim();
+        if (!trimmedName) return;
+        if (ranches.includes(trimmedName)) {
+          showToast('此牧場已在名單中！', 'error');
+          return;
+        }
+        
+        setRanches([...ranches, trimmedName]);
+        setRanchMapping(prev => ({
+          ...prev,
+          [trimmedName]: newRanchType
+        }));
+
+        setFormData(prev => ({
+          ...prev,
+          ranch: trimmedName,
+          ranchType: newRanchType
+        }));
+
+        setNewRanchName('');
+        showToast(`已新增契約牧場：${trimmedName} (${newRanchType})`);
+      };
+
+      const handleDeleteRanch = (name) => {
+        setRanches(ranches.filter(r => r !== name));
+        const newMapping = { ...ranchMapping };
+        delete newMapping[name];
+        setRanchMapping(newMapping);
+
+        if (formData.ranch === name) {
+          const fallbackRanch = ranches[0] || '';
+          setFormData(prev => ({
+            ...prev,
+            ranch: fallbackRanch,
+            ranchType: ranchMapping[fallbackRanch] || RANCH_TYPES[0]
+          }));
+        }
+        showToast(`已自名單移除：${name}`, 'info');
+      };
+
+      const generateNotificationText = (data) => {
+        let eggDeclarationText = '';
+        let grandTotalBoxes = 0;
+        let grandTotalEggs = 0;
+
+        unlockedEggs.forEach(type => {
+          const egg = data.eggs[type];
+          const cartsVal = parseFloat(egg.carts) || 0;
+          const boxesVal = parseFloat(egg.boxes) || 0;
+          const trayBoxesVal = parseFloat(egg.trayBoxes) || 0;
+
+          const totalBoxes = (cartsVal * CART_TO_BOX_RATIO) + boxesVal + trayBoxesVal;
+          const totalEggs = Math.round((cartsVal * CART_TO_EGG_RATIO) + (boxesVal + trayBoxesVal) * BOX_TO_EGG_RATIO);
+
+          grandTotalBoxes += totalBoxes;
+          grandTotalEggs += totalEggs;
+
+          if (cartsVal > 0 || boxesVal > 0 || trayBoxesVal > 0) {
+            eggDeclarationText += `🥚 [${type}]：\n`;
+            eggDeclarationText += `   ⁃ 產量：${cartsVal} 台車 / ${boxesVal} 箱散蛋 / ${trayBoxesVal} 箱盤蛋\n`;
+            eggDeclarationText += `   ⁃ 折算：${totalBoxes.toFixed(1)} 箱 (約 ${totalEggs.toLocaleString()} 顆)\n`;
+          }
+        });
+
+        if (!eggDeclarationText) {
+          eggDeclarationText = '⚠️ 尚未填報今日產量（請先填入上方雞隻羽數解鎖蛋種）\n';
+        }
+
+        let chickenText = '';
+        let mortalityText = '';
+        let totalMortality = 0;
+
+        Object.keys(data.chickens).forEach(type => {
+          const item = data.chickens[type];
+          if (item.checked && item.count) {
+            chickenText += ` ⁃ ${type}：${parseFloat(item.count).toLocaleString()} 隻\n`;
+            
+            const mort = parseInt(item.mortality, 10) || 0;
+            if (mort > 0) {
+               mortalityText += ` ⁃ ${type}：${mort} 隻\n`;
+               totalMortality += mort;
+            }
+          }
+        });
+
+        if (!chickenText) chickenText = ' ⁃ 未填報今日羽數\n';
+        if (!mortalityText) mortalityText = ' ⁃ 無異常\n';
+
+        return `【🌾 茂生契約牧場每日產量回報】
 ━━━━━━━━━━━━━━━━━━
 📍 牧場名稱：${data.ranch || '未選擇'} (${data.ranchType})
 📅 產蛋日：${data.date}
@@ -658,1164 +712,1159 @@ ${mortalityText}
 ━━━━━━━━━━━━━━━━━━
 回報時間：${new Date().toLocaleString('zh-TW', { hour12: false })}
 確認人員：茂生契約現場派駐人員`;
-  };
+      };
 
-  const notificationText = generateNotificationText(formData);
+      const notificationText = generateNotificationText(formData);
 
-  const handleCopyToClipboard = () => {
-    const textarea = document.createElement('textarea');
-    textarea.value = notificationText;
-    document.body.appendChild(textarea);
-    textarea.select();
-    try {
-      document.execCommand('copy');
-      showToast('通知內容已複製到剪貼簿！可直接貼上至 LINE 或簡訊群組。');
-    } catch (err) {
-      showToast('複製失敗，請手動全選複製。', 'error');
-    }
-    document.body.removeChild(textarea);
-  };
-
-  // 匯出 CSV 檔案 (動態過濾空白列與欄位，並加上 Bottom Summary 合計)
-  const handleExportCSV = () => {
-    if (records.length === 0) {
-      showToast('目前暫無紀錄可供匯出。', 'error');
-      return;
-    }
-
-    // 1. 動態找出目前有資料的「蛋種 (Egg Types)」
-    const activeEggTypes = EGG_TYPES.filter(type => {
-      return records.some(rec => {
-        const egg = rec.eggs?.[type];
-        if (!egg) return false;
-        return (parseFloat(egg.carts) || 0) > 0 || 
-               (parseFloat(egg.boxes) || 0) > 0 || 
-               (parseFloat(egg.trayBoxes) || 0) > 0;
-      });
-    });
-
-    // 2. 動態找出目前有資料的「蛋雞種類 (Chicken Types)」
-    const activeChickenTypes = CHICKEN_TYPES.filter(type => {
-      return records.some(rec => {
-        const cData = rec.chickens?.[type];
-        if (!cData) return false;
-        if (typeof cData === 'object') {
-          return (parseFloat(cData.count) || 0) > 0 || (parseInt(cData.mortality, 10) || 0) > 0;
+      const handleCopyToClipboard = () => {
+        const textarea = document.createElement('textarea');
+        textarea.value = notificationText;
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+          document.execCommand('copy');
+          showToast('通知內容已複製到剪貼簿！可直接貼上至 LINE 或簡訊群組。');
+        } catch (err) {
+          showToast('複製失敗，請手動全選複製。', 'error');
         }
-        return (parseFloat(cData) || 0) > 0;
-      });
-    });
+        document.body.removeChild(textarea);
+      };
 
-    // 3. 建構動態 CSV 表頭
-    let headers = ["產蛋日", "茂生契約牧場", "牧場型態"];
-    activeEggTypes.forEach(type => {
-      headers.push(`${type}_台車`, `${type}_散蛋箱`, `${type}_盤蛋箱`, `${type}_折算箱數`);
-    });
-    headers.push("全場總折算箱數", "估算總顆數");
-    activeChickenTypes.forEach(type => {
-      headers.push(`${type}_現存羽數`, `${type}_死亡數`);
-    });
-    headers.push("全場雞隻死亡總數", "現場備註");
-
-    let csvRows = [];
-    csvRows.push(headers.map(h => escapeCSV(h)).join(','));
-
-    // 4. 初始化每一數值欄位的合計累算陣列
-    let colTotals = new Array(headers.length).fill(0);
-
-    // 5. 依據動態欄位組裝每行資料
-    records.forEach(rec => {
-      let rowCells = [];
-      rowCells.push(rec.date);
-      rowCells.push(rec.ranch);
-      rowCells.push(rec.ranchType || '未填');
-
-      let totalBoxesSum = 0;
-      let totalEggsSum = 0;
-
-      // 填充蛋種數據
-      activeEggTypes.forEach(type => {
-        const egg = rec.eggs?.[type] || { carts: 0, boxes: 0, trayBoxes: 0 };
-        const cartsVal = parseFloat(egg.carts) || 0;
-        const boxesVal = parseFloat(egg.boxes) || 0;
-        const trayBoxesVal = parseFloat(egg.trayBoxes) || 0;
-        const totalBoxes = (cartsVal * CART_TO_BOX_RATIO) + boxesVal + trayBoxesVal;
-        const totalEggs = (cartsVal * CART_TO_EGG_RATIO) + (boxesVal + trayBoxesVal) * BOX_TO_EGG_RATIO;
-
-        totalBoxesSum += totalBoxes;
-        totalEggsSum += totalEggs;
-
-        rowCells.push(cartsVal);
-        rowCells.push(boxesVal);
-        rowCells.push(trayBoxesVal);
-        rowCells.push(parseFloat(totalBoxes.toFixed(1)));
-      });
-
-      rowCells.push(parseFloat(totalBoxesSum.toFixed(1)));
-      rowCells.push(Math.round(totalEggsSum));
-
-      // 填充雞隻數據
-      activeChickenTypes.forEach(type => {
-        const cData = rec.chickens?.[type];
-        let count = 0;
-        let mortality = 0;
-        if (cData && typeof cData === 'object') {
-          count = parseFloat(cData.count) || 0;
-          mortality = parseInt(cData.mortality, 10) || 0;
-        } else if (cData) {
-          count = parseFloat(cData) || 0;
+      // 匯出 CSV 檔案
+      const handleExportCSV = () => {
+        if (records.length === 0) {
+          showToast('目前暫無紀錄可供匯出。', 'error');
+          return;
         }
-        rowCells.push(count);
-        rowCells.push(mortality);
-      });
 
-      // 總死亡與備註
-      rowCells.push(parseInt(rec.mortality, 10) || 0);
-      rowCells.push(rec.notes || '');
+        const activeEggTypes = EGG_TYPES.filter(type => {
+          return records.some(rec => {
+            const egg = rec.eggs?.[type];
+            if (!egg) return false;
+            return (parseFloat(egg.carts) || 0) > 0 || 
+                   (parseFloat(egg.boxes) || 0) > 0 || 
+                   (parseFloat(egg.trayBoxes) || 0) > 0;
+          });
+        });
 
-      // 將數值加入 colTotals 合計中
-      for (let i = 3; i < headers.length; i++) {
-        if (i === headers.length - 1) continue; // 略過最後一欄備註字串
-        colTotals[i] += parseFloat(rowCells[i]) || 0;
-      }
+        const activeChickenTypes = CHICKEN_TYPES.filter(type => {
+          return records.some(rec => {
+            const cData = rec.chickens?.[type];
+            if (!cData) return false;
+            if (typeof cData === 'object') {
+              return (parseFloat(cData.count) || 0) > 0 || (parseInt(cData.mortality, 10) || 0) > 0;
+            }
+            return (parseFloat(cData) || 0) > 0;
+          });
+        });
 
-      // 轉成安全 CSV 字串並寫入行
-      const formattedRow = rowCells.map((cell, idx) => {
-        if (idx < 3 || idx === headers.length - 1) {
-          return escapeCSV(cell);
+        let headers = ["產蛋日", "茂生契約牧場", "牧場型態"];
+        activeEggTypes.forEach(type => {
+          headers.push(`${type}_台車`, `${type}_散蛋箱`, `${type}_盤蛋箱`, `${type}_折算箱數`);
+        });
+        headers.push("全場總折算箱數", "估算總顆數");
+        activeChickenTypes.forEach(type => {
+          headers.push(`${type}_現存羽數`, `${type}_死亡數`);
+        });
+        headers.push("全場雞隻死亡總數", "現場備註");
+
+        let csvRows = [];
+        csvRows.push(headers.map(h => escapeCSV(h)).join(','));
+
+        let colTotals = new Array(headers.length).fill(0);
+
+        records.forEach(rec => {
+          let rowCells = [];
+          rowCells.push(rec.date);
+          rowCells.push(rec.ranch);
+          rowCells.push(rec.ranchType || '未填');
+
+          let totalBoxesSum = 0;
+          let totalEggsSum = 0;
+
+          activeEggTypes.forEach(type => {
+            const egg = rec.eggs?.[type] || { carts: 0, boxes: 0, trayBoxes: 0 };
+            const cartsVal = parseFloat(egg.carts) || 0;
+            const boxesVal = parseFloat(egg.boxes) || 0;
+            const trayBoxesVal = parseFloat(egg.trayBoxes) || 0;
+            const totalBoxes = (cartsVal * CART_TO_BOX_RATIO) + boxesVal + trayBoxesVal;
+            const totalEggs = (cartsVal * CART_TO_EGG_RATIO) + (boxesVal + trayBoxesVal) * BOX_TO_EGG_RATIO;
+
+            totalBoxesSum += totalBoxes;
+            totalEggsSum += totalEggs;
+
+            rowCells.push(cartsVal);
+            rowCells.push(boxesVal);
+            rowCells.push(trayBoxesVal);
+            rowCells.push(parseFloat(totalBoxes.toFixed(1)));
+          });
+
+          rowCells.push(parseFloat(totalBoxesSum.toFixed(1)));
+          rowCells.push(Math.round(totalEggsSum));
+
+          activeChickenTypes.forEach(type => {
+            const cData = rec.chickens?.[type];
+            let count = 0;
+            let mortality = 0;
+            if (cData && typeof cData === 'object') {
+              count = parseFloat(cData.count) || 0;
+              mortality = parseInt(cData.mortality, 10) || 0;
+            } else if (cData) {
+              count = parseFloat(cData) || 0;
+            }
+            rowCells.push(count);
+            rowCells.push(mortality);
+          });
+
+          rowCells.push(parseInt(rec.mortality, 10) || 0);
+          rowCells.push(rec.notes || '');
+
+          for (let i = 3; i < headers.length; i++) {
+            if (i === headers.length - 1) continue; 
+            colTotals[i] += parseFloat(rowCells[i]) || 0;
+          }
+
+          const formattedRow = rowCells.map((cell, idx) => {
+            if (idx < 3 || idx === headers.length - 1) {
+              return escapeCSV(cell);
+            }
+            return cell;
+          }).join(',');
+
+          csvRows.push(formattedRow);
+        });
+
+        let summaryCells = [];
+        summaryCells.push("合計");
+        summaryCells.push("");
+        summaryCells.push(""); 
+
+        for (let i = 3; i < headers.length; i++) {
+          if (i === headers.length - 1) {
+            summaryCells.push(""); 
+          } else {
+            const sumVal = colTotals[i];
+            if (headers[i].includes("折算箱數") || headers[i].includes("全場總折算箱數")) {
+              summaryCells.push(parseFloat(sumVal.toFixed(1)));
+            } else if (headers[i].includes("台車")) {
+              summaryCells.push(parseFloat(sumVal.toFixed(2)));
+            } else {
+              summaryCells.push(Math.round(sumVal));
+            }
+          }
         }
-        return cell;
-      }).join(',');
 
-      csvRows.push(formattedRow);
-    });
+        const formattedSummaryRow = summaryCells.map((cell, idx) => {
+          if (idx < 3 || idx === headers.length - 1) {
+            return escapeCSV(cell);
+          }
+          return cell;
+        }).join(',');
 
-    // 6. 建立 bottom summary 合計列
-    let summaryCells = [];
-    summaryCells.push("合計");
-    summaryCells.push("");
-    summaryCells.push(""); // 產日、牧場、型態不進行加總，留白
+        csvRows.push(formattedSummaryRow);
 
-    for (let i = 3; i < headers.length; i++) {
-      if (i === headers.length - 1) {
-        summaryCells.push(""); // 備註欄留白
-      } else {
-        const sumVal = colTotals[i];
-        // 針對浮點數與整數做漂亮的輸出格式微調
-        if (headers[i].includes("折算箱數") || headers[i].includes("全場總折算箱數")) {
-          summaryCells.push(parseFloat(sumVal.toFixed(1)));
-        } else if (headers[i].includes("台車")) {
-          summaryCells.push(parseFloat(sumVal.toFixed(2)));
-        } else {
-          summaryCells.push(Math.round(sumVal));
-        }
-      }
-    }
+        let csvContent = "\uFEFF" + csvRows.join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", `茂生契約牧場產量紀錄表_${new Date().toISOString().split('T')[0]}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        showToast('歷史生產數據 CSV 報表下載完成！');
+      };
 
-    const formattedSummaryRow = summaryCells.map((cell, idx) => {
-      if (idx < 3 || idx === headers.length - 1) {
-        return escapeCSV(cell);
-      }
-      return cell;
-    }).join(',');
+      return (
+        <div className="min-h-screen bg-slate-100 text-slate-800 font-sans pb-12">
+          
+          {/* 產蛋率異常警示彈窗 */}
+          {alertModal.show && (
+            <div className="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+              <div className="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+                <div className="fixed inset-0 bg-slate-900/60 transition-opacity" onClick={() => setAlertModal(prev => ({ ...prev, show: false }))}></div>
+                <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+                
+                <div className="inline-block align-bottom bg-white rounded-3xl text-left overflow-hidden shadow-2xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full border border-red-100">
+                  <div className="bg-red-50 px-6 py-5 border-b border-red-100 flex items-center gap-3">
+                    <div className="bg-red-100 p-2 rounded-2xl text-red-600">
+                      <svg className="w-6 h-6 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                    </div>
+                    <h3 className="text-lg font-black text-red-800" id="modal-title">{alertModal.title}</h3>
+                  </div>
+                  <div className="px-6 py-6 space-y-4">
+                    <p className="text-sm text-slate-600 whitespace-pre-wrap leading-relaxed font-bold">
+                      {alertModal.message}
+                    </p>
+                    
+                    <div className="bg-slate-50 p-4 rounded-2xl grid grid-cols-2 gap-4 border border-slate-100">
+                      <div>
+                        <span className="text-xs text-slate-400 font-bold block">「台車+散箱」總申報</span>
+                        <span className="text-base font-black text-slate-800">{alertModal.totalEggs.toLocaleString()} 顆</span>
+                      </div>
+                      <div>
+                        <span className="text-xs text-slate-400 font-bold block">當前總飼養羽數</span>
+                        <span className="text-base font-black text-slate-800">{alertModal.totalChickens.toLocaleString()} 隻</span>
+                      </div>
+                      <div className="col-span-2 border-t border-slate-200/50 pt-2.5 mt-1">
+                        <span className="text-xs text-slate-400 font-bold block">估算全場產蛋率</span>
+                        <span className="text-lg font-black text-red-600">{alertModal.percentage}% (異常)</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-slate-50 px-6 py-4 flex flex-col-reverse sm:flex-row justify-end gap-2.5 border-t border-slate-100">
+                    <button 
+                      type="button" 
+                      onClick={() => setAlertModal(prev => ({ ...prev, show: false }))}
+                      className="w-full sm:w-auto px-5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-50 transition-all shadow-xs"
+                    >
+                      返回核對修改
+                    </button>
+                    <button 
+                      type="button" 
+                      onClick={alertModal.onConfirm}
+                      className="w-full sm:w-auto px-5 py-2.5 bg-red-600 text-white rounded-xl text-xs font-black hover:bg-red-700 transition-all shadow-md shadow-red-200"
+                    >
+                      數據無誤，強制儲存
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
-    csvRows.push(formattedSummaryRow);
-
-    // 7. 送出並下載檔案
-    let csvContent = "\uFEFF" + csvRows.join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.setAttribute("href", url);
-    link.setAttribute("download", `茂生契約牧場產量紀錄表_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    showToast('歷史生產數據 CSV 報表下載完成！');
-  };
-
-  return (
-    <div className="min-h-screen bg-slate-100 text-slate-800 font-sans pb-12">
-      
-      {/* 產蛋率異常警示彈窗 */}
-      {alertModal.show && (
-        <div className="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
-          <div className="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
-            <div className="fixed inset-0 bg-slate-900/60 transition-opacity" onClick={() => setAlertModal(prev => ({ ...prev, show: false }))}></div>
-            <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
-            
-            <div className="inline-block align-bottom bg-white rounded-3xl text-left overflow-hidden shadow-2xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full border border-red-100">
-              <div className="bg-red-50 px-6 py-5 border-b border-red-100 flex items-center gap-3">
-                <div className="bg-red-100 p-2 rounded-2xl text-red-600">
-                  <svg className="w-6 h-6 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          {/* 頂部導覽與系統標題 */}
+          <header className="bg-emerald-800 text-white shadow-md sticky top-0 z-50">
+            <div className="max-w-6xl mx-auto px-4 py-3 flex flex-col md:flex-row justify-between items-center gap-4">
+              <div className="flex items-center gap-3">
+                <div className="bg-white p-2 rounded-2xl shadow-md flex items-center justify-center">
+                  <svg className="w-10 h-10 text-emerald-800" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="50" cy="50" r="46" stroke="currentColor" strokeWidth="6" />
+                    <path d="M50 25C38 25 32 45 32 60C32 72 40 78 50 78C60 78 68 72 68 60C68 45 62 25 50 25Z" fill="#FBBF24" opacity="0.85" />
+                    <path d="M50 40C50 40 54 48 50 56C46 56 42 48 42 40C42 32 50 40 50 40Z" fill="#047857" />
+                    <path d="M50 40C50 40 46 48 50 56C54 56 58 48 58 40C58 32 50 40 50 40Z" fill="#059669" />
                   </svg>
                 </div>
-                <h3 className="text-lg font-black text-red-800" id="modal-title">{alertModal.title}</h3>
-              </div>
-              <div className="px-6 py-6 space-y-4">
-                <p className="text-sm text-slate-600 whitespace-pre-wrap leading-relaxed font-bold">
-                  {alertModal.message}
-                </p>
-                
-                <div className="bg-slate-50 p-4 rounded-2xl grid grid-cols-2 gap-4 border border-slate-100">
-                  <div>
-                    <span className="text-xs text-slate-400 font-bold block">「台車+散箱」總申報</span>
-                    <span className="text-base font-black text-slate-800">{alertModal.totalEggs.toLocaleString()} 顆</span>
+                <div>
+                  <div className="flex items-center flex-wrap gap-2">
+                    <h1 className="text-xl sm:text-2xl font-black tracking-wider">茂生契約牧場產量紀錄</h1>
+                    <span className="bg-emerald-600 text-amber-300 text-[10px] font-extrabold px-2 py-0.5 rounded-full border border-emerald-500 whitespace-nowrap">{VERSION}</span>
                   </div>
-                  <div>
-                    <span className="text-xs text-slate-400 font-bold block">當前總飼養羽數</span>
-                    <span className="text-base font-black text-slate-800">{alertModal.totalChickens.toLocaleString()} 隻</span>
-                  </div>
-                  <div className="col-span-2 border-t border-slate-200/50 pt-2.5 mt-1">
-                    <span className="text-xs text-slate-400 font-bold block">估算全場產蛋率</span>
-                    <span className="text-lg font-black text-red-600">{alertModal.percentage}% (異常)</span>
-                  </div>
+                  <p className="text-[10px] sm:text-xs text-emerald-200 font-bold tracking-wide flex flex-wrap gap-x-3 gap-y-1">
+                    <span>開發者：{DEVELOPER}</span>
+                    <span className="opacity-75">|</span>
+                    <span>更新日期：{UPDATE_DATE}</span>
+                  </p>
                 </div>
               </div>
-              <div className="bg-slate-50 px-6 py-4 flex flex-col-reverse sm:flex-row justify-end gap-2.5 border-t border-slate-100">
+
+              <nav className="flex bg-emerald-900/60 p-1 rounded-2xl w-full md:w-auto shadow-inner">
                 <button 
-                  type="button" 
-                  onClick={() => setAlertModal(prev => ({ ...prev, show: false }))}
-                  className="w-full sm:w-auto px-5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-50 transition-all shadow-xs"
+                  onClick={() => { setActiveTab('input'); setEditingRecord(null); }}
+                  className={`flex-1 md:flex-initial px-3 sm:px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-1.5 ${activeTab === 'input' ? 'bg-white text-emerald-900 shadow-sm' : 'text-emerald-100 hover:bg-emerald-900/40'}`}
                 >
-                  返回核對修改
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11" /></svg>
+                  每日產量回報
                 </button>
                 <button 
-                  type="button" 
-                  onClick={alertModal.onConfirm}
-                  className="w-full sm:w-auto px-5 py-2.5 bg-red-600 text-white rounded-xl text-xs font-black hover:bg-red-700 transition-all shadow-md shadow-red-200"
+                  onClick={() => setActiveTab('history')}
+                  className={`flex-1 md:flex-initial px-3 sm:px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-1.5 ${activeTab === 'history' ? 'bg-white text-emerald-900 shadow-sm' : 'text-emerald-100 hover:bg-emerald-900/40'}`}
                 >
-                  數據無誤，強制儲存
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2" /></svg>
+                  歷史紀錄
                 </button>
-              </div>
+                <button 
+                  onClick={() => setActiveTab('analytics')}
+                  className={`flex-1 md:flex-initial px-3 sm:px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-1.5 ${activeTab === 'analytics' ? 'bg-white text-emerald-900 shadow-sm' : 'text-emerald-100 hover:bg-emerald-900/40'}`}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 19v-6a2 2 0 00-2-2H5" /></svg>
+                  數據儀表板
+                </button>
+                <button 
+                  onClick={() => setActiveTab('settings')}
+                  className={`flex-1 md:flex-initial px-3 sm:px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-1.5 ${activeTab === 'settings' ? 'bg-white text-emerald-900 shadow-sm' : 'text-emerald-100 hover:bg-emerald-900/40'}`}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M10.325 4.317c.426-1.756" /></svg>
+                  牧場設定
+                </button>
+              </nav>
             </div>
-          </div>
-        </div>
-      )}
+          </header>
 
-      {/* 頂部導覽與系統標題 */}
-      <header className="bg-emerald-800 text-white shadow-md sticky top-0 z-50">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex flex-col md:flex-row justify-between items-center gap-4">
-          <div className="flex items-center gap-3">
-            <div className="bg-white p-2 rounded-2xl shadow-md flex items-center justify-center">
-              <svg className="w-10 h-10 text-emerald-800" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="50" cy="50" r="46" stroke="currentColor" strokeWidth="6" />
-                <path d="M50 25C38 25 32 45 32 60C32 72 40 78 50 78C60 78 68 72 68 60C68 45 62 25 50 25Z" fill="#FBBF24" opacity="0.85" />
-                <path d="M50 40C50 40 54 48 50 56C46 56 42 48 42 40C42 32 50 40 50 40Z" fill="#047857" />
-                <path d="M50 40C50 40 46 48 50 56C54 56 58 48 58 40C58 32 50 40 50 40Z" fill="#059669" />
-              </svg>
-            </div>
-            <div>
-              <div className="flex items-center flex-wrap gap-2">
-                <h1 className="text-xl sm:text-2xl font-black tracking-wider">茂生契約牧場產量紀錄</h1>
-                <span className="bg-emerald-600 text-amber-300 text-[10px] font-extrabold px-2 py-0.5 rounded-full border border-emerald-500 whitespace-nowrap">{VERSION}</span>
-              </div>
-              <p className="text-[10px] sm:text-xs text-emerald-200 font-bold tracking-wide flex flex-wrap gap-x-3 gap-y-1">
-                <span>開發者：{DEVELOPER}</span>
-                <span className="opacity-75">|</span>
-                <span>更新日期：{UPDATE_DATE}</span>
-              </p>
-            </div>
-          </div>
-
-          <nav className="flex bg-emerald-900/60 p-1 rounded-2xl w-full md:w-auto shadow-inner">
-            <button 
-              onClick={() => { setActiveTab('input'); setEditingRecord(null); }}
-              className={`flex-1 md:flex-initial px-3 sm:px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-1.5 ${activeTab === 'input' ? 'bg-white text-emerald-900 shadow-sm' : 'text-emerald-100 hover:bg-emerald-900/40'}`}
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11" /></svg>
-              每日產量回報
-            </button>
-            <button 
-              onClick={() => setActiveTab('history')}
-              className={`flex-1 md:flex-initial px-3 sm:px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-1.5 ${activeTab === 'history' ? 'bg-white text-emerald-900 shadow-sm' : 'text-emerald-100 hover:bg-emerald-900/40'}`}
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2" /></svg>
-              歷史紀錄
-            </button>
-            <button 
-              onClick={() => setActiveTab('analytics')}
-              className={`flex-1 md:flex-initial px-3 sm:px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-1.5 ${activeTab === 'analytics' ? 'bg-white text-emerald-900 shadow-sm' : 'text-emerald-100 hover:bg-emerald-900/40'}`}
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 19v-6a2 2 0 00-2-2H5" /></svg>
-              數據儀表板
-            </button>
-            <button 
-              onClick={() => setActiveTab('settings')}
-              className={`flex-1 md:flex-initial px-3 sm:px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-1.5 ${activeTab === 'settings' ? 'bg-white text-emerald-900 shadow-sm' : 'text-emerald-100 hover:bg-emerald-900/40'}`}
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M10.325 4.317c.426-1.756" /></svg>
-              牧場設定
-            </button>
-          </nav>
-        </div>
-      </header>
-
-      {/* 主要內容區 */}
-      <main className="max-w-6xl mx-auto px-4 mt-6">
-        
-        {/* --- 分頁：每日產量回報 --- */}
-        {activeTab === 'input' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* 主要內容區 */}
+          <main className="max-w-6xl mx-auto px-4 mt-6">
             
-            <div className="lg:col-span-7 bg-white rounded-3xl shadow-sm border border-slate-200 p-6">
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-xl font-extrabold text-slate-900 flex items-center gap-2">
-                  <span className="w-3 h-6 bg-emerald-600 rounded-full inline-block"></span>
-                  📝 每日產量回報
-                </h2>
-                {editingRecord && (
-                  <button 
-                    onClick={() => {
-                      setEditingRecord(null);
-                      setFormData({
-                        ranch: ranches[0] || '',
-                        ranchType: ranchMapping[ranches[0]] || RANCH_TYPES[0],
-                        date: new Date().toISOString().split('T')[0],
-                        notes: '',
-                        eggs: getInitialEggsState(),
-                        chickens: getInitialChickensState()
-                      });
-                      showToast('已取消本次編輯', 'info');
-                    }}
-                    className="text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1 bg-red-50 px-2.5 py-1 rounded-lg"
-                  >
-                    取消編輯
-                  </button>
+            {/* --- 分頁：每日產量回報 --- */}
+            {activeTab === 'input' && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                
+                {/* 數據填寫表單 */}
+                <div className="lg:col-span-7 bg-white rounded-3xl shadow-sm border border-slate-200 p-6">
+                  <div className="flex justify-between items-center mb-6">
+                    <h2 className="text-xl font-extrabold text-slate-900 flex items-center gap-2">
+                      <span className="w-3 h-6 bg-emerald-600 rounded-full inline-block"></span>
+                      📝 每日產量回報
+                    </h2>
+                    {editingRecord && (
+                      <button 
+                        onClick={() => {
+                          setEditingRecord(null);
+                          setFormData({
+                            ranch: ranches[0] || '',
+                            ranchType: ranchMapping[ranches[0]] || RANCH_TYPES[0],
+                            date: new Date().toISOString().split('T')[0],
+                            notes: '',
+                            eggs: getInitialEggsState(),
+                            chickens: getInitialChickensState()
+                          });
+                          showToast('已取消本次編輯', 'info');
+                        }}
+                        className="text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1 bg-red-50 px-2.5 py-1 rounded-lg"
+                      >
+                        取消編輯
+                      </button>
+                    )}
+                  </div>
+
+                  <form onSubmit={handleSubmit} className="space-y-6">
+                    {/* 牧場、型態與產蛋日 */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-sm font-bold text-slate-700 mb-1.5">牧場名稱 <span className="text-red-500">*</span></label>
+                        <select
+                          name="ranch"
+                          value={formData.ranch}
+                          onChange={handleRanchNameChange}
+                          className="w-full px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-2xl focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all text-sm font-bold"
+                          required
+                        >
+                          {ranches.map((r, idx) => (
+                            <option key={idx} value={r}>{r}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-bold text-slate-700 mb-1.5">牧場型態</label>
+                        <select
+                          name="ranchType"
+                          value={formData.ranchType}
+                          onChange={handleInputChange}
+                          className="w-full px-3 py-2.5 bg-slate-100 border border-slate-300 rounded-2xl text-sm font-bold text-slate-500 focus:outline-none"
+                          disabled={DEFAULT_RANCHES.includes(formData.ranch)}
+                        >
+                          {RANCH_TYPES.map((type, idx) => (
+                            <option key={idx} value={type}>{type}</option>
+                          ))}
+                        </select>
+                        {DEFAULT_RANCHES.includes(formData.ranch) && (
+                          <span className="text-[10px] text-emerald-600 font-bold mt-1 block">✓ 已自動依契約牧場配對型態</span>
+                        )}
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-bold text-slate-700 mb-1.5">產蛋日 <span className="text-red-500">*</span></label>
+                        <input
+                          type="date"
+                          name="date"
+                          value={formData.date}
+                          onChange={handleInputChange}
+                          className="w-full px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-2xl focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all text-sm font-bold"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    {/* 1. 場內現存蛋雞數量 */}
+                    <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200/60 space-y-4">
+                      <div>
+                        <h3 className="text-sm font-black text-slate-700 mb-1 flex items-center gap-1.5">
+                          🐓 場內現存蛋雞數量 (可複選) <span className="text-red-500">*</span>
+                        </h3>
+                        <p className="text-xs text-slate-400">請勾選並填入飼養羽數，下方會自動依此帶出對應蛋種供您填報產量</p>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                        {CHICKEN_TYPES.map((type) => {
+                          const item = formData.chickens[type];
+                          return (
+                            <div key={type} className={`p-3.5 rounded-xl border shadow-xs flex flex-col gap-2.5 transition-all ${
+                              item.checked ? 'bg-white border-emerald-500 ring-1 ring-emerald-100' : 'bg-slate-50 border-slate-200 opacity-90'
+                            }`}>
+                              <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={item.checked}
+                                  onChange={() => handleChickenCheckboxChange(type)}
+                                  className="w-5 h-5 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300 cursor-pointer"
+                                />
+                                <span className="text-sm font-black text-slate-800">{type}</span>
+                              </label>
+                              
+                              {item.checked && (
+                                <div className="relative mt-1 animate-fadeIn">
+                                  <input
+                                    type="number"
+                                    placeholder="請輸入現存羽數"
+                                    value={item.count}
+                                    onChange={(e) => handleChickenCountChange(type, e.target.value)}
+                                    className="w-full pl-3 pr-10 py-2 border border-emerald-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-xs font-bold"
+                                    required
+                                  />
+                                  <span className="absolute inset-y-0 right-3 flex items-center text-[10px] text-slate-400 font-extrabold">隻</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* 2. 蛋種與產蛋量 */}
+                    <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200/60 space-y-4">
+                      <div>
+                        <h3 className="text-sm font-black text-slate-700 mb-1 flex items-center gap-1.5">
+                          🥚 蛋種與產蛋量
+                        </h3>
+                        <p className="text-xs text-slate-400">依據上方填報之蛋雞羽數，自動帶出可填寫的對應產蛋項目</p>
+                      </div>
+                      
+                      {unlockedEggs.length === 0 ? (
+                        <div className="bg-amber-50 text-amber-800 p-6 rounded-xl text-center border border-dashed border-amber-200 font-bold text-xs">
+                          ⚠️ 請先在上方「場內現存蛋雞數量」勾選並輸入羽數，即可自動帶出相對應蛋種填寫區。
+                        </div>
+                      ) : (
+                        <div className="space-y-3.5">
+                          {unlockedEggs.map(type => {
+                            const eggState = formData.eggs[type];
+                            return (
+                              <div 
+                                key={type} 
+                                className="p-4 rounded-xl border bg-white border-emerald-400 shadow-xs animate-fadeIn"
+                              >
+                                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                                  <span className="text-sm font-black text-slate-900 flex items-center gap-1.5">
+                                    <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full inline-block"></span>
+                                    {type}
+                                  </span>
+                                  <span className="text-[10px] bg-emerald-50 text-emerald-700 font-black px-2 py-0.5 rounded-full">
+                                    已連動帶出
+                                  </span>
+                                </div>
+
+                                <div className="mt-4 grid grid-cols-3 gap-3">
+                                  <div>
+                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">台車數量</label>
+                                    <div className="relative">
+                                      <input
+                                        type="number"
+                                        step="any"
+                                        placeholder="0"
+                                        value={eggState.carts}
+                                        onChange={(e) => handleEggQtyChange(type, 'carts', e.target.value)}
+                                        className="w-full pl-2.5 pr-6 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-xs font-semibold"
+                                      />
+                                      <span className="absolute inset-y-0 right-1.5 flex items-center text-[10px] text-slate-400 font-bold pointer-events-none">台</span>
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">散蛋箱數</label>
+                                    <div className="relative">
+                                      <input
+                                        type="number"
+                                        step="any"
+                                        placeholder="0"
+                                        value={eggState.boxes}
+                                        onChange={(e) => handleEggQtyChange(type, 'boxes', e.target.value)}
+                                        className="w-full pl-2.5 pr-6 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-xs font-semibold"
+                                      />
+                                      <span className="absolute inset-y-0 right-1.5 flex items-center text-[10px] text-slate-400 font-bold pointer-events-none">箱</span>
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <label className="block text-[11px] font-bold text-slate-500 mb-1">盤蛋箱數</label>
+                                    <div className="relative">
+                                      <input
+                                        type="number"
+                                        step="any"
+                                        placeholder="0"
+                                        value={eggState.trayBoxes}
+                                        onChange={(e) => handleEggQtyChange(type, 'trayBoxes', e.target.value)}
+                                        className="w-full pl-2.5 pr-6 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-xs font-semibold"
+                                      />
+                                      <span className="absolute inset-y-0 right-1.5 flex items-center text-[10px] text-slate-400 font-bold pointer-events-none">箱</span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="mt-3.5 text-right text-[10px] text-emerald-800 font-bold bg-emerald-50/50 p-2 rounded-lg flex justify-between">
+                                  <span className="text-slate-400">折算公式：1台車=4320顆 | 1箱散/盤蛋={BOX_TO_EGG_RATIO.toFixed(0)}顆</span>
+                                  <span>
+                                    小計：{(((parseFloat(eggState.carts) || 0) * CART_TO_BOX_RATIO) + (parseFloat(eggState.boxes) || 0) + (parseFloat(eggState.trayBoxes) || 0)).toFixed(1)} 箱 / 
+                                    約 {Math.round(((parseFloat(eggState.carts) || 0) * CART_TO_EGG_RATIO) + ((parseFloat(eggState.boxes) || 0) + (parseFloat(eggState.trayBoxes) || 0)) * BOX_TO_EGG_RATIO).toLocaleString()} 顆
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
+
+                          <div className="bg-emerald-50 text-emerald-800 p-4 rounded-xl text-xs space-y-1 font-bold border border-emerald-100">
+                            <div className="flex justify-between items-center text-[11px] opacity-90">
+                              <span>💡 全場申報統計 (異常產蛋警告公式採用散箱 200 顆折算，此預覽採用標準計量)</span>
+                            </div>
+                            <div className="border-t border-emerald-200/50 my-1.5 pt-1.5 flex justify-between items-center text-emerald-900">
+                              <span>全場產蛋折算總量：</span>
+                              <span>
+                                <strong className="text-sm">
+                                  {unlockedEggs.reduce((acc, cur) => acc + ((parseFloat(formData.eggs[cur].carts) || 0) * CART_TO_BOX_RATIO) + (parseFloat(formData.eggs[cur].boxes) || 0) + (parseFloat(formData.eggs[cur].trayBoxes) || 0), 0).toFixed(1)}
+                                </strong> 箱 / 
+                                <strong className="text-sm ml-1">
+                                  {Math.round(unlockedEggs.reduce((acc, cur) => {
+                                    const e = formData.eggs[cur];
+                                    return acc + ((parseFloat(e.carts) || 0) * CART_TO_EGG_RATIO) + ((parseFloat(e.boxes) || 0) + (parseFloat(e.trayBoxes) || 0)) * BOX_TO_EGG_RATIO;
+                                  }, 0)).toLocaleString()}
+                                </strong> 顆
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 3. 今日雞隻死亡數量 (依據勾選種類帶出) */}
+                    <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200/60 space-y-4">
+                      <div>
+                        <h3 className="text-sm font-black text-slate-700 mb-1 flex items-center gap-1.5">
+                          💀 今日雞隻死亡數量
+                        </h3>
+                        <p className="text-xs text-slate-400">依據上方勾選之蛋雞種類，個別填報死亡隻數</p>
+                      </div>
+
+                      {Object.keys(formData.chickens).filter(t => formData.chickens[t].checked).length === 0 ? (
+                        <div className="bg-amber-50 text-amber-800 p-4 rounded-xl text-center border border-dashed border-amber-200 font-bold text-xs">
+                          ⚠️ 請先於上方勾選「場內現存蛋雞數量」。
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                          {CHICKEN_TYPES.filter(type => formData.chickens[type].checked).map(type => {
+                            const item = formData.chickens[type];
+                            return (
+                              <div key={`${type}-mortality`} className="p-3.5 rounded-xl border bg-white border-slate-200 shadow-xs flex flex-col gap-1.5 animate-fadeIn">
+                                <label className="block text-xs font-bold text-slate-600">{type} 死亡數</label>
+                                <div className="relative">
+                                  <input
+                                    type="number"
+                                    placeholder="0"
+                                    value={item.mortality}
+                                    onChange={(e) => handleChickenMortalityChange(type, e.target.value)}
+                                    className="w-full pl-3 pr-10 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-xs font-bold"
+                                  />
+                                  <span className="absolute inset-y-0 right-3 flex items-center text-[10px] text-slate-400 font-extrabold">隻</span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 現場備註 */}
+                    <div>
+                      <label className="block text-sm font-bold text-slate-700 mb-1.5">現場備註說明</label>
+                      <textarea
+                        name="notes"
+                        rows="2.5"
+                        placeholder="請輸入異常回報或現場備註，若無可留空..."
+                        value={formData.notes}
+                        onChange={handleInputChange}
+                        className="w-full px-3.5 py-3 border border-slate-300 rounded-2xl focus:ring-2 focus:ring-emerald-500 text-sm"
+                      ></textarea>
+                    </div>
+
+                    {/* 提交按鈕 */}
+                    <button
+                      type="submit"
+                      className="w-full py-3.5 rounded-2xl font-black text-sm tracking-widest text-white shadow-lg transition-all flex justify-center items-center gap-2 bg-emerald-700 hover:bg-emerald-800 shadow-emerald-200"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9" /></svg>
+                      確認儲存每日紀錄
+                    </button>
+                  </form>
+                </div>
+
+                {/* LINE 回報與預覽 */}
+                <div className="lg:col-span-5 flex flex-col gap-6">
+                  <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 flex-1 flex flex-col">
+                    <div className="flex justify-between items-center mb-4">
+                      <h2 className="text-lg font-bold text-slate-900 flex items-center gap-1.5">
+                        <span className="w-2.5 h-5 bg-amber-500 rounded-full inline-block"></span>
+                        📱 LINE 通知格式預覽
+                      </h2>
+                      <span className="bg-amber-100 text-amber-800 text-[10px] font-black px-2.5 py-1 rounded-full">
+                        即時同步
+                      </span>
+                    </div>
+
+                    <div className="bg-[#849cc4] rounded-2xl p-4 flex-1 flex flex-col font-sans overflow-hidden">
+                      <div className="text-white/75 text-[10px] text-center mb-3">今日下午 17:50</div>
+                      
+                      <div className="flex items-start gap-2 mb-4 overflow-y-auto max-h-[500px]">
+                        <div className="bg-emerald-800 text-amber-300 w-8 h-8 rounded-full flex items-center justify-center font-black text-xs shadow-md flex-shrink-0">
+                          茂
+                        </div>
+                        <div className="flex-1 max-w-[85%]">
+                          <div className="text-white/90 text-[10px] mb-1 font-bold ml-1">茂生產量助理</div>
+                          <div className="bg-white text-slate-800 p-4 rounded-2xl rounded-tl-none shadow-md text-xs sm:text-sm whitespace-pre-wrap leading-relaxed">
+                            {notificationText}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={handleCopyToClipboard}
+                      className="mt-4 w-full bg-slate-900 hover:bg-slate-800 text-white py-3.5 rounded-2xl font-bold shadow-md transition-all flex justify-center items-center gap-2"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10" /></svg>
+                      複製產量通知文字
+                    </button>
+                  </div>
+
+                  <div className="bg-emerald-950 text-emerald-100 rounded-3xl p-5 shadow-sm space-y-3">
+                    <h3 className="text-sm font-black flex items-center gap-1.5 text-amber-300">
+                      📋 勾稽關係對照表
+                    </h3>
+                    <div className="text-xs space-y-2 leading-relaxed opacity-95 font-semibold">
+                      <div className="grid grid-cols-2 gap-2 border-b border-emerald-800/60 pb-2">
+                        <div>🐓 蛋雞種類</div>
+                        <div>🥚 帶出蛋種</div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 opacity-90">
+                        <div>白雞</div>
+                        <div>散白蛋、機白蛋</div>
+                        <div>紅雞</div>
+                        <div>散紅蛋、機紅蛋</div>
+                        <div>土雞</div>
+                        <div>粉殼蛋</div>
+                        <div>烏骨雞</div>
+                        <div>綠殼蛋</div>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+            )}
+
+            {/* --- 分頁：歷史紀錄 --- */}
+            {activeTab === 'history' && (
+              <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6">
+                
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+                  <div>
+                    <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                      <span className="w-2.5 h-6 bg-sky-500 rounded-full inline-block"></span>
+                      📚 茂生契約歷史生產檔案
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-0.5">追蹤各牧場歷日申報之各別蛋種生產、羽數及健康數據。</p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                    <div className="flex-1 md:flex-initial min-w-[160px]">
+                      <select
+                        value={filterRanch}
+                        onChange={(e) => setFilterRanch(e.target.value)}
+                        className="w-full px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:bg-white text-xs font-bold"
+                      >
+                        <option value="all">顯示所有合作牧場</option>
+                        {ranches.map((r, idx) => (
+                          <option key={idx} value={r}>{r}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <button
+                      onClick={handleExportCSV}
+                      className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5" /></svg>
+                      匯出 Excel/CSV
+                    </button>
+                  </div>
+                </div>
+
+                {filteredRecords.length === 0 ? (
+                  <div className="text-center py-16 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
+                    <div className="text-slate-300 mb-3 flex justify-center">
+                      <svg className="w-16 h-16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 12h6m-6 4h6" /></svg>
+                    </div>
+                    <h3 className="text-slate-600 font-bold">目前無符合條件之生產紀錄</h3>
+                    <p className="text-xs text-slate-400 mt-1">請前往每日產量回報進行資料登載。</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto rounded-2xl border border-slate-200">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 text-xs font-black uppercase tracking-wider">
+                          <th className="px-4 py-3.5">產蛋日</th>
+                          <th className="px-4 py-3.5">牧場名稱</th>
+                          <th className="px-4 py-3.5">牧場型態</th>
+                          <th className="px-4 py-3.5">申報蛋種產量</th>
+                          <th className="px-4 py-3.5 text-right">全場折算箱數</th>
+                          <th className="px-4 py-3.5 text-right">估算總顆數</th>
+                          <th className="px-4 py-3.5">蛋雞現存羽數</th>
+                          <th className="px-4 py-3.5">各別死亡明細</th>
+                          <th className="px-4 py-3.5 text-center">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-xs sm:text-sm">
+                        {filteredRecords.map((rec) => {
+                          const { totalBoxes, totalEggs } = calculateEggTotals(rec.eggs, EGG_TYPES);
+                          const activeEggs = [];
+
+                          if (rec.eggs) {
+                            Object.keys(rec.eggs).forEach(type => {
+                              const egg = rec.eggs[type];
+                              if (egg && (egg.carts > 0 || egg.boxes > 0 || egg.trayBoxes > 0)) {
+                                const subBoxes = (egg.carts * CART_TO_BOX_RATIO) + egg.boxes + (egg.trayBoxes || 0);
+                                activeEggs.push(`${type}(${subBoxes.toFixed(1)}箱)`);
+                              }
+                            });
+                          }
+                          
+                          const chickensData = rec.chickens || {};
+                          const chList = [];
+                          const mortList = [];
+
+                          Object.keys(chickensData).forEach(type => {
+                             const cData = chickensData[type];
+                             if(cData && typeof cData === 'object') {
+                               if(cData.count) chList.push(`${type}:${parseFloat(cData.count).toLocaleString()}隻`);
+                               if(cData.mortality && cData.mortality > 0) mortList.push(`${type}:${cData.mortality}隻`);
+                             } else if (cData) { // 相容舊版
+                               chList.push(`${type}:${parseFloat(cData).toLocaleString()}隻`);
+                             }
+                          });
+
+                          return (
+                            <tr key={rec.id} className="hover:bg-slate-50 transition-all font-medium">
+                              <td className="px-4 py-3 text-slate-900 font-bold whitespace-nowrap">{rec.date}</td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <span className="bg-emerald-50 text-emerald-800 font-extrabold px-2 py-1 rounded-md">
+                                  {rec.ranch}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap text-slate-500 font-semibold">{rec.ranchType || '傳統場'}</td>
+                              <td className="px-4 py-3">
+                                <div className="flex flex-wrap gap-1 max-w-[220px]">
+                                  {activeEggs.length > 0 ? (
+                                    activeEggs.map((eggLabel, idx) => (
+                                      <span key={idx} className="bg-amber-50 text-amber-800 text-[10px] px-2 py-0.5 rounded font-black border border-amber-200 animate-fadeIn">
+                                        {eggLabel}
+                                      </span>
+                                    ))
+                                  ) : (
+                                    <span className="text-slate-300 italic text-xs">無產蛋數據</span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                <span className="text-emerald-700 font-black">{totalBoxes.toFixed(1)} 箱</span>
+                              </td>
+                              <td className="px-4 py-3 text-right font-bold text-slate-900">
+                                {totalEggs.toLocaleString()} 顆
+                              </td>
+                              <td className="px-4 py-3">
+                                {chList.length > 0 ? (
+                                  <div className="flex flex-wrap gap-1 max-w-[150px]">
+                                    {chList.map((ch, idx) => (
+                                      <span key={idx} className="bg-slate-100 text-slate-600 text-[10px] px-1.5 py-0.5 rounded font-bold">
+                                        {ch}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span className="text-slate-300 italic text-xs">未填報</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3">
+                                {mortList.length > 0 ? (
+                                  <div className="flex flex-wrap gap-1 max-w-[120px]">
+                                    {mortList.map((m, idx) => (
+                                      <span key={idx} className="bg-red-50 text-red-600 text-[10px] px-1.5 py-0.5 rounded font-bold border border-red-100">
+                                        {m}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <span className="text-slate-300 italic text-xs">0隻</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex justify-center items-center gap-1.5">
+                                  <button
+                                    onClick={() => handleEditInit(rec)}
+                                    className="text-amber-600 hover:bg-amber-50 p-1.5 rounded-lg transition-all"
+                                    title="編輯"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M11 5H6a2 2 0 00-2 2v11" /></svg>
+                                  </button>
+                                  <button
+                                    onClick={() => handleDelete(rec.id)}
+                                    className="text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition-all"
+                                    title="刪除"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21" /></svg>
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </div>
+            )}
 
-              <form onSubmit={handleSubmit} className="space-y-6">
-                {/* 牧場、型態與產蛋日 */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {/* --- 分頁：數據儀表板 --- */}
+            {activeTab === 'analytics' && (
+              <div className="space-y-6">
+                
+                <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                   <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-1.5">牧場名稱 <span className="text-red-500">*</span></label>
+                    <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                      <span className="w-2.5 h-6 bg-emerald-500 rounded-full inline-block"></span>
+                      📊 契約生產力視覺化看板
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-0.5">動態分析篩選牧場的產蛋效率與死亡預警狀況。</p>
+                  </div>
+                  <div>
                     <select
-                      name="ranch"
-                      value={formData.ranch}
-                      onChange={handleRanchNameChange}
-                      className="w-full px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-2xl focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all text-sm font-bold"
-                      required
+                      value={filterRanch}
+                      onChange={(e) => setFilterRanch(e.target.value)}
+                      className="px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:bg-white text-xs font-bold"
                     >
+                      <option value="all">所有合作牧場加總</option>
                       {ranches.map((r, idx) => (
                         <option key={idx} value={r}>{r}</option>
                       ))}
                     </select>
                   </div>
+                </div>
 
-                  <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-1.5">牧場型態</label>
-                    <select
-                      name="ranchType"
-                      value={formData.ranchType}
-                      onChange={handleInputChange}
-                      className="w-full px-3 py-2.5 bg-slate-100 border border-slate-300 rounded-2xl text-sm font-bold text-slate-500 focus:outline-none"
-                      disabled={DEFAULT_RANCHES.includes(formData.ranch)}
-                    >
-                      {RANCH_TYPES.map((type, idx) => (
-                        <option key={idx} value={type}>{type}</option>
-                      ))}
-                    </select>
-                    {DEFAULT_RANCHES.includes(formData.ranch) && (
-                      <span className="text-[10px] text-emerald-600 font-bold mt-1 block">✓ 已自動依契約牧場配對型態</span>
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4">
+                    <div className="p-3 rounded-xl bg-amber-100 text-amber-700">
+                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 11H5m14 0" /></svg>
+                    </div>
+                    <div>
+                      <span className="text-xs text-slate-400 font-bold block">累計台車數</span>
+                      <span className="text-lg sm:text-xl font-black text-slate-800">{stats.totalCarts} 台</span>
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4">
+                    <div className="p-3 rounded-xl bg-sky-100 text-sky-700">
+                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M20 7l-8-4-8 4" /></svg>
+                    </div>
+                    <div>
+                      <span className="text-xs text-slate-400 font-bold block">累計散/盤箱</span>
+                      <span className="text-lg sm:text-xl font-black text-slate-800">{(stats.totalBoxes + stats.totalTrayBoxes)} 箱</span>
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4">
+                    <div className="p-3 rounded-xl bg-emerald-100 text-emerald-700">
+                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 19v-6" /></svg>
+                    </div>
+                    <div>
+                      <span className="text-xs text-slate-400 font-bold block">總折算箱數</span>
+                      <span className="text-lg sm:text-xl font-black text-emerald-700">{stats.totalConvertedBoxes.toFixed(1)} 箱</span>
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4">
+                    <div className="p-3 rounded-xl bg-indigo-100 text-indigo-700">
+                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 8c-1.657" /></svg>
+                    </div>
+                    <div>
+                      <span className="text-xs text-slate-400 font-bold block">估算總顆數</span>
+                      <span className="text-lg sm:text-xl font-black text-indigo-700">{stats.totalEggsCalculated.toLocaleString()} 顆</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  
+                  <div className="bg-white rounded-3xl shadow-sm border border-slate-200/60 p-6">
+                    <h3 className="text-sm font-bold text-slate-800 mb-4 flex items-center gap-1.5">
+                      📈 產量波動趨勢 (全場折算箱數)
+                    </h3>
+                    {sortedRecords.length < 2 ? (
+                      <div className="h-60 flex flex-col justify-center items-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-100 text-xs">
+                        至少需要 2 筆以上的紀錄才能進行波動圖表分析
+                      </div>
+                    ) : (
+                      <div className="relative">
+                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
+                          <svg viewBox="0 0 500 200" className="w-full h-48 overflow-visible">
+                            <line x1="0" y1="50" x2="500" y2="50" stroke="#e2e8f0" strokeDasharray="4 4" />
+                            <line x1="0" y1="100" x2="500" y2="100" stroke="#e2e8f0" strokeDasharray="4 4" />
+                            <line x1="0" y1="150" x2="500" y2="150" stroke="#e2e8f0" strokeDasharray="4 4" />
+                            
+                            {(() => {
+                              if (sortedRecords.length === 0) return null;
+                              const maxBoxes = Math.max(...sortedRecords.map(r => {
+                                const { totalBoxes } = calculateEggTotals(r.eggs, EGG_TYPES);
+                                return totalBoxes;
+                              })) || 1;
+                              const minBoxes = Math.min(...sortedRecords.map(r => {
+                                const { totalBoxes } = calculateEggTotals(r.eggs, EGG_TYPES);
+                                return totalBoxes;
+                              })) || 0;
+                              const range = (maxBoxes - minBoxes) || 1;
+
+                              const points = sortedRecords.map((r, idx) => {
+                                const { totalBoxes } = calculateEggTotals(r.eggs, EGG_TYPES);
+                                const x = sortedRecords.length > 1 ? (idx / (sortedRecords.length - 1)) * 440 + 30 : 250;
+                                const y = 170 - ((totalBoxes - minBoxes) / range) * 120;
+                                return { x, y, val: totalBoxes, date: r.date };
+                              });
+
+                              const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+
+                              return (
+                                <>
+                                  <path
+                                    d={`${pathD} L ${points[points.length-1].x} 180 L ${points[0].x} 180 Z`}
+                                    fill="url(#emerald-grad)"
+                                    opacity="0.15"
+                                  />
+                                  <path
+                                    d={pathD}
+                                    fill="none"
+                                    stroke="#047857"
+                                    strokeWidth="3"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                  {points.map((p, idx) => (
+                                    <g key={idx}>
+                                      <circle cx={p.x} cy={p.y} r="5" fill="#ffffff" stroke="#047857" strokeWidth="3" />
+                                      <text x={p.x} y={p.y - 12} fontSize="10" fontWeight="bold" textAnchor="middle" fill="#047857">
+                                        {p.val.toFixed(1)}箱
+                                      </text>
+                                      <text x={p.x} y="195" fontSize="8" fill="#94a3b8" textAnchor="middle">
+                                        {p.date.substring(5)}
+                                      </text>
+                                    </g>
+                                  ))}
+                                  <defs>
+                                    <linearGradient id="emerald-grad" x1="0" y1="0" x2="0" y2="1">
+                                      <stop offset="0%" stopColor="#047857" />
+                                      <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+                                    </linearGradient>
+                                  </defs>
+                                </>
+                              );
+                            })()}
+                          </svg>
+                        </div>
+                      </div>
                     )}
                   </div>
 
-                  <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-1.5">產蛋日 <span className="text-red-500">*</span></label>
-                    <input
-                      type="date"
-                      name="date"
-                      value={formData.date}
-                      onChange={handleInputChange}
-                      className="w-full px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-2xl focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all text-sm font-bold"
-                      required
-                    />
-                  </div>
-                </div>
-
-                {/* 1. 場內現存蛋雞數量 */}
-                <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200/60 space-y-4">
-                  <div>
-                    <h3 className="text-sm font-black text-slate-700 mb-1 flex items-center gap-1.5">
-                      🐓 場內現存蛋雞數量 (可複選) <span className="text-red-500">*</span>
+                  <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6">
+                    <h3 className="text-sm font-bold text-slate-800 mb-4 flex items-center gap-1.5">
+                      ⚠️ 全場雞隻死亡數統計與紅色警戒 (閾值: 5隻)
                     </h3>
-                    <p className="text-xs text-slate-400">請勾選並填入飼養羽數，下方會自動依此帶出對應蛋種供您填報產量</p>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                    {CHICKEN_TYPES.map((type) => {
-                      const item = formData.chickens[type];
-                      return (
-                        <div key={type} className={`p-3.5 rounded-xl border shadow-xs flex flex-col gap-2.5 transition-all ${
-                          item.checked ? 'bg-white border-emerald-500 ring-1 ring-emerald-100' : 'bg-slate-50 border-slate-200 opacity-90'
-                        }`}>
-                          <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                            <input
-                              type="checkbox"
-                              checked={item.checked}
-                              onChange={() => handleChickenCheckboxChange(type)}
-                              className="w-5 h-5 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300 cursor-pointer"
-                            />
-                            <span className="text-sm font-black text-slate-800">{type}</span>
-                          </label>
-                          
-                          {item.checked && (
-                            <div className="relative mt-1 animate-fadeIn">
-                              <input
-                                type="number"
-                                placeholder="請輸入現存羽數"
-                                value={item.count}
-                                onChange={(e) => handleChickenCountChange(type, e.target.value)}
-                                className="w-full pl-3 pr-10 py-2 border border-emerald-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-xs font-bold"
-                                required
-                              />
-                              <span className="absolute inset-y-0 right-3 flex items-center text-[10px] text-slate-400 font-extrabold">隻</span>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                    {sortedRecords.length < 2 ? (
+                      <div className="h-60 flex flex-col justify-center items-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-100 text-xs">
+                        至少需要 2 筆以上的紀錄才能進行健康度統計
+                      </div>
+                    ) : (
+                      <div className="relative">
+                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
+                          <svg viewBox="0 0 500 200" className="w-full h-48 overflow-visible">
+                            <line x1="0" y1="90" x2="500" y2="90" stroke="#ef4444" strokeWidth="1" strokeDasharray="5 5" />
+                            <text x="490" y="85" fill="#ef4444" fontSize="8" fontWeight="bold" textAnchor="end">每日紅色警報點: 5 隻</text>
 
-                {/* 2. 蛋種與產蛋量 */}
-                <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200/60 space-y-4">
-                  <div>
-                    <h3 className="text-sm font-black text-slate-700 mb-1 flex items-center gap-1.5">
-                      🥚 蛋種與產蛋量
-                    </h3>
-                    <p className="text-xs text-slate-400">依據上方填報之蛋雞羽數，自動帶出可填寫的對應產蛋項目</p>
-                  </div>
-                  
-                  {unlockedEggs.length === 0 ? (
-                    <div className="bg-amber-50 text-amber-800 p-6 rounded-xl text-center border border-dashed border-amber-200 font-bold text-xs">
-                      ⚠️ 請先在上方「場內現存蛋雞數量」勾選並輸入羽數，即可自動帶出相對應蛋種填寫區。
-                    </div>
-                  ) : (
-                    <div className="space-y-3.5">
-                      {unlockedEggs.map(type => {
-                        const eggState = formData.eggs[type];
-                        return (
-                          <div 
-                            key={type} 
-                            className="p-4 rounded-xl border bg-white border-emerald-400 shadow-xs animate-fadeIn"
-                          >
-                            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                              <span className="text-sm font-black text-slate-900 flex items-center gap-1.5">
-                                <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full inline-block"></span>
-                                {type}
-                              </span>
-                              <span className="text-[10px] bg-emerald-50 text-emerald-700 font-black px-2 py-0.5 rounded-full">
-                                已連動帶出
-                              </span>
-                            </div>
+                            {(() => {
+                              if (sortedRecords.length === 0) return null;
+                              const maxMort = Math.max(...sortedRecords.map(r => r.mortality || 0)) || 5;
 
-                            <div className="mt-4 grid grid-cols-3 gap-3">
-                              <div>
-                                <label className="block text-[11px] font-bold text-slate-500 mb-1">台車數量</label>
-                                <div className="relative">
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="0"
-                                    value={eggState.carts}
-                                    onChange={(e) => handleEggQtyChange(type, 'carts', e.target.value)}
-                                    className="w-full pl-2.5 pr-6 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-xs font-semibold"
-                                  />
-                                  <span className="absolute inset-y-0 right-1.5 flex items-center text-[10px] text-slate-400 font-bold pointer-events-none">台</span>
-                                </div>
-                              </div>
+                              return sortedRecords.map((r, idx) => {
+                                const x = sortedRecords.length > 1 ? (idx / (sortedRecords.length - 1)) * 430 + 35 : 250;
+                                const height = ((r.mortality || 0) / Math.max(maxMort, 10)) * 130;
+                                const y = 175 - height;
+                                const isHigh = (r.mortality || 0) >= 5;
 
-                              <div>
-                                <label className="block text-[11px] font-bold text-slate-500 mb-1">散蛋箱數</label>
-                                <div className="relative">
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="0"
-                                    value={eggState.boxes}
-                                    onChange={(e) => handleEggQtyChange(type, 'boxes', e.target.value)}
-                                    className="w-full pl-2.5 pr-6 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-xs font-semibold"
-                                  />
-                                  <span className="absolute inset-y-0 right-1.5 flex items-center text-[10px] text-slate-400 font-bold pointer-events-none">箱</span>
-                                </div>
-                              </div>
-
-                              <div>
-                                <label className="block text-[11px] font-bold text-slate-500 mb-1">盤蛋箱數</label>
-                                <div className="relative">
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="0"
-                                    value={eggState.trayBoxes}
-                                    onChange={(e) => handleEggQtyChange(type, 'trayBoxes', e.target.value)}
-                                    className="w-full pl-2.5 pr-6 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-xs font-semibold"
-                                  />
-                                  <span className="absolute inset-y-0 right-1.5 flex items-center text-[10px] text-slate-400 font-bold pointer-events-none">箱</span>
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="mt-3.5 text-right text-[10px] text-emerald-800 font-bold bg-emerald-50/50 p-2 rounded-lg flex justify-between">
-                              <span className="text-slate-400">折算公式：1台車=4320顆 | 1箱散/盤蛋={BOX_TO_EGG_RATIO.toFixed(0)}顆</span>
-                              <span>
-                                小計：{(((parseFloat(eggState.carts) || 0) * CART_TO_BOX_RATIO) + (parseFloat(eggState.boxes) || 0) + (parseFloat(eggState.trayBoxes) || 0)).toFixed(1)} 箱 / 
-                                約 {Math.round(((parseFloat(eggState.carts) || 0) * CART_TO_EGG_RATIO) + ((parseFloat(eggState.boxes) || 0) + (parseFloat(eggState.trayBoxes) || 0)) * BOX_TO_EGG_RATIO).toLocaleString()} 顆
-                              </span>
-                            </div>
-                          </div>
-                        );
-                      })}
-
-                      <div className="bg-emerald-50 text-emerald-800 p-4 rounded-xl text-xs space-y-1 font-bold border border-emerald-100">
-                        <div className="flex justify-between items-center text-[11px] opacity-90">
-                          <span>💡 全場申報統計 (異常產蛋警告公式採用散箱 200 顆折算，此預覽採用標準計量)</span>
-                        </div>
-                        <div className="border-t border-emerald-200/50 my-1.5 pt-1.5 flex justify-between items-center text-emerald-900">
-                          <span>全場產蛋折算總量：</span>
-                          <span>
-                            <strong className="text-sm">
-                              {unlockedEggs.reduce((acc, cur) => acc + ((parseFloat(formData.eggs[cur].carts) || 0) * CART_TO_BOX_RATIO) + (parseFloat(formData.eggs[cur].boxes) || 0) + (parseFloat(formData.eggs[cur].trayBoxes) || 0), 0).toFixed(1)}
-                            </strong> 箱 / 
-                            <strong className="text-sm ml-1">
-                              {Math.round(unlockedEggs.reduce((acc, cur) => {
-                                const e = formData.eggs[cur];
-                                return acc + ((parseFloat(e.carts) || 0) * CART_TO_EGG_RATIO) + ((parseFloat(e.boxes) || 0) + (parseFloat(e.trayBoxes) || 0)) * BOX_TO_EGG_RATIO;
-                              }, 0)).toLocaleString()}
-                            </strong> 顆
-                          </span>
+                                return (
+                                  <g key={idx}>
+                                    <rect
+                                      x={x - 8}
+                                      y={y}
+                                      width="16"
+                                      height={Math.max(height, 2)}
+                                      rx="4"
+                                      fill={isHigh ? '#dc2626' : '#475569'}
+                                      opacity="0.85"
+                                    />
+                                    <text x={x} y={y - 8} fontSize="10" fontWeight="bold" textAnchor="middle" fill={isHigh ? '#dc2626' : '#475569'}>
+                                      {r.mortality || 0}
+                                    </text>
+                                    <text x={x} y="192" fontSize="8" fill="#94a3b8" textAnchor="middle">
+                                      {r.date.substring(5)}
+                                    </text>
+                                  </g>
+                                );
+                              });
+                            })()}
+                          </svg>
                         </div>
                       </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* 3. 今日雞隻死亡數量 (依據勾選種類帶出) */}
-                <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200/60 space-y-4">
-                  <div>
-                    <h3 className="text-sm font-black text-slate-700 mb-1 flex items-center gap-1.5">
-                      💀 今日雞隻死亡數量
-                    </h3>
-                    <p className="text-xs text-slate-400">依據上方勾選之蛋雞種類，個別填報死亡隻數</p>
+                    )}
                   </div>
 
-                  {Object.keys(formData.chickens).filter(t => formData.chickens[t].checked).length === 0 ? (
-                    <div className="bg-amber-50 text-amber-800 p-4 rounded-xl text-center border border-dashed border-amber-200 font-bold text-xs">
-                      ⚠️ 請先於上方勾選「場內現存蛋雞數量」。
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                      {CHICKEN_TYPES.filter(type => formData.chickens[type].checked).map(type => {
-                        const item = formData.chickens[type];
-                        return (
-                          <div key={`${type}-mortality`} className="p-3.5 rounded-xl border bg-white border-slate-200 shadow-xs flex flex-col gap-1.5 animate-fadeIn">
-                            <label className="block text-xs font-bold text-slate-600">{type} 死亡數</label>
-                            <div className="relative">
-                              <input
-                                type="number"
-                                placeholder="0"
-                                value={item.mortality}
-                                onChange={(e) => handleChickenMortalityChange(type, e.target.value)}
-                                className="w-full pl-3 pr-10 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-xs font-bold"
-                              />
-                              <span className="absolute inset-y-0 right-3 flex items-center text-[10px] text-slate-400 font-extrabold">隻</span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
                 </div>
-
-                {/* 現場備註 */}
-                <div>
-                  <label className="block text-sm font-bold text-slate-700 mb-1.5">現場備註說明</label>
-                  <textarea
-                    name="notes"
-                    rows="2.5"
-                    placeholder="請輸入異常回報或現場備註，若無可留空..."
-                    value={formData.notes}
-                    onChange={handleInputChange}
-                    className="w-full px-3.5 py-3 border border-slate-300 rounded-2xl focus:ring-2 focus:ring-emerald-500 text-sm"
-                  ></textarea>
-                </div>
-
-                {/* 提交按鈕 */}
-                <button
-                  type="submit"
-                  className="w-full py-3.5 rounded-2xl font-black text-sm tracking-widest text-white shadow-lg transition-all flex justify-center items-center gap-2 bg-emerald-700 hover:bg-emerald-800 shadow-emerald-200"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9" /></svg>
-                  確認儲存每日紀錄
-                </button>
-              </form>
-            </div>
-
-            {/* LINE 回報與預覽 */}
-            <div className="lg:col-span-5 flex flex-col gap-6">
-              <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 flex-1 flex flex-col">
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-lg font-bold text-slate-900 flex items-center gap-1.5">
-                    <span className="w-2.5 h-5 bg-amber-500 rounded-full inline-block"></span>
-                    📱 LINE 通知格式預覽
-                  </h2>
-                  <span className="bg-amber-100 text-amber-800 text-[10px] font-black px-2.5 py-1 rounded-full">
-                    即時同步
-                  </span>
-                </div>
-
-                <div className="bg-[#849cc4] rounded-2xl p-4 flex-1 flex flex-col font-sans overflow-hidden">
-                  <div className="text-white/75 text-[10px] text-center mb-3">今日下午 17:50</div>
-                  
-                  <div className="flex items-start gap-2 mb-4 overflow-y-auto max-h-[500px]">
-                    <div className="bg-emerald-800 text-amber-300 w-8 h-8 rounded-full flex items-center justify-center font-black text-xs shadow-md flex-shrink-0">
-                      茂
-                    </div>
-                    <div className="flex-1 max-w-[85%]">
-                      <div className="text-white/90 text-[10px] mb-1 font-bold ml-1">茂生產量助理</div>
-                      <div className="bg-white text-slate-800 p-4 rounded-2xl rounded-tl-none shadow-md text-xs sm:text-sm whitespace-pre-wrap leading-relaxed">
-                        {notificationText}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleCopyToClipboard}
-                  className="mt-4 w-full bg-slate-900 hover:bg-slate-800 text-white py-3.5 rounded-2xl font-bold shadow-md transition-all flex justify-center items-center gap-2"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10" /></svg>
-                  複製產量通知文字
-                </button>
-              </div>
-
-              <div className="bg-emerald-950 text-emerald-100 rounded-3xl p-5 shadow-sm space-y-3">
-                <h3 className="text-sm font-black flex items-center gap-1.5 text-amber-300">
-                  📋 勾稽關係對照表
-                </h3>
-                <div className="text-xs space-y-2 leading-relaxed opacity-95 font-semibold">
-                  <div className="grid grid-cols-2 gap-2 border-b border-emerald-800/60 pb-2">
-                    <div>🐓 蛋雞種類</div>
-                    <div>🥚 帶出蛋種</div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 opacity-90">
-                    <div>白雞</div>
-                    <div>散白蛋、機白蛋</div>
-                    <div>紅雞</div>
-                    <div>散紅蛋、機紅蛋</div>
-                    <div>土雞</div>
-                    <div>粉殼蛋</div>
-                    <div>烏骨雞</div>
-                    <div>綠殼蛋</div>
-                  </div>
-                </div>
-              </div>
-
-            </div>
-          </div>
-        )}
-
-        {/* --- 分頁：歷史紀錄 --- */}
-        {activeTab === 'history' && (
-          <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6">
-            
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
-              <div>
-                <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
-                  <span className="w-2.5 h-6 bg-sky-500 rounded-full inline-block"></span>
-                  📚 茂生契約歷史生產檔案
-                </h2>
-                <p className="text-xs text-slate-500 mt-0.5">追蹤各牧場歷日申報之各別蛋種生產、羽數及健康數據。</p>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-                <div className="flex-1 md:flex-initial min-w-[160px]">
-                  <select
-                    value={filterRanch}
-                    onChange={(e) => setFilterRanch(e.target.value)}
-                    className="w-full px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:bg-white text-xs font-bold"
-                  >
-                    <option value="all">顯示所有合作牧場</option>
-                    {ranches.map((r, idx) => (
-                      <option key={idx} value={r}>{r}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <button
-                  onClick={handleExportCSV}
-                  className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-4 py-2.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5" /></svg>
-                  匯出 Excel/CSV
-                </button>
-              </div>
-            </div>
-
-            {filteredRecords.length === 0 ? (
-              <div className="text-center py-16 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
-                <div className="text-slate-300 mb-3 flex justify-center">
-                  <svg className="w-16 h-16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 12h6m-6 4h6" /></svg>
-                </div>
-                <h3 className="text-slate-600 font-bold">目前無符合條件之生產紀錄</h3>
-                <p className="text-xs text-slate-400 mt-1">請前往每日產量回報進行資料登載。</p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto rounded-2xl border border-slate-200">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 text-xs font-black uppercase tracking-wider">
-                      <th className="px-4 py-3.5">產蛋日</th>
-                      <th className="px-4 py-3.5">牧場名稱</th>
-                      <th className="px-4 py-3.5">牧場型態</th>
-                      <th className="px-4 py-3.5">申報蛋種產量</th>
-                      <th className="px-4 py-3.5 text-right">全場折算箱數</th>
-                      <th className="px-4 py-3.5 text-right">估算總顆數</th>
-                      <th className="px-4 py-3.5">蛋雞現存羽數</th>
-                      <th className="px-4 py-3.5">各別死亡明細</th>
-                      <th className="px-4 py-3.5 text-center">操作</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-xs sm:text-sm">
-                    {filteredRecords.map((rec) => {
-                      const { totalBoxes, totalEggs } = calculateEggTotals(rec.eggs, EGG_TYPES);
-                      const activeEggs = [];
-
-                      if (rec.eggs) {
-                        Object.keys(rec.eggs).forEach(type => {
-                          const egg = rec.eggs[type];
-                          if (egg && (egg.carts > 0 || egg.boxes > 0 || egg.trayBoxes > 0)) {
-                            const subBoxes = (egg.carts * CART_TO_BOX_RATIO) + egg.boxes + (egg.trayBoxes || 0);
-                            activeEggs.push(`${type}(${subBoxes.toFixed(1)}箱)`);
-                          }
-                        });
-                      }
-                      
-                      const chickensData = rec.chickens || {};
-                      const chList = [];
-                      const mortList = [];
-
-                      Object.keys(chickensData).forEach(type => {
-                         const cData = chickensData[type];
-                         if(cData && typeof cData === 'object') {
-                           if(cData.count) chList.push(`${type}:${parseFloat(cData.count).toLocaleString()}隻`);
-                           if(cData.mortality && cData.mortality > 0) mortList.push(`${type}:${cData.mortality}隻`);
-                         } else if (cData) { // 相容舊版
-                           chList.push(`${type}:${parseFloat(cData).toLocaleString()}隻`);
-                         }
-                      });
-
-                      return (
-                        <tr key={rec.id} className="hover:bg-slate-50 transition-all font-medium">
-                          <td className="px-4 py-3 text-slate-900 font-bold whitespace-nowrap">{rec.date}</td>
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            <span className="bg-emerald-50 text-emerald-800 font-extrabold px-2 py-1 rounded-md">
-                              {rec.ranch}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap text-slate-500 font-semibold">{rec.ranchType || '傳統場'}</td>
-                          <td className="px-4 py-3">
-                            <div className="flex flex-wrap gap-1 max-w-[220px]">
-                              {activeEggs.length > 0 ? (
-                                activeEggs.map((eggLabel, idx) => (
-                                  <span key={idx} className="bg-amber-50 text-amber-800 text-[10px] px-2 py-0.5 rounded font-black border border-amber-200 animate-fadeIn">
-                                    {eggLabel}
-                                  </span>
-                                ))
-                              ) : (
-                                <span className="text-slate-300 italic text-xs">無產蛋數據</span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-4 py-3 text-right">
-                            <span className="text-emerald-700 font-black">{totalBoxes.toFixed(1)} 箱</span>
-                          </td>
-                          <td className="px-4 py-3 text-right font-bold text-slate-900">
-                            {totalEggs.toLocaleString()} 顆
-                          </td>
-                          <td className="px-4 py-3">
-                            {chList.length > 0 ? (
-                              <div className="flex flex-wrap gap-1 max-w-[150px]">
-                                {chList.map((ch, idx) => (
-                                  <span key={idx} className="bg-slate-100 text-slate-600 text-[10px] px-1.5 py-0.5 rounded font-bold">
-                                    {ch}
-                                  </span>
-                                ))}
-                              </div>
-                            ) : (
-                              <span className="text-slate-300 italic text-xs">未填報</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3">
-                            {mortList.length > 0 ? (
-                              <div className="flex flex-wrap gap-1 max-w-[120px]">
-                                {mortList.map((m, idx) => (
-                                  <span key={idx} className="bg-red-50 text-red-600 text-[10px] px-1.5 py-0.5 rounded font-bold border border-red-100">
-                                    {m}
-                                  </span>
-                                ))}
-                              </div>
-                            ) : (
-                              <span className="text-slate-300 italic text-xs">0隻</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex justify-center items-center gap-1.5">
-                              <button
-                                onClick={() => handleEditInit(rec)}
-                                className="text-amber-600 hover:bg-amber-50 p-1.5 rounded-lg transition-all"
-                                title="編輯"
-                              >
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M11 5H6a2 2 0 00-2 2v11" /></svg>
-                              </button>
-                              <button
-                                onClick={() => handleDelete(rec.id)}
-                                className="text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition-all"
-                                title="刪除"
-                              >
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21" /></svg>
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
               </div>
             )}
-          </div>
-        )}
 
-        {/* --- 分頁：數據儀表板 --- */}
-        {activeTab === 'analytics' && (
-          <div className="space-y-6">
-            
-            <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-              <div>
-                <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
-                  <span className="w-2.5 h-6 bg-emerald-500 rounded-full inline-block"></span>
-                  📊 契約生產力視覺化看板
-                </h2>
-                <p className="text-xs text-slate-500 mt-0.5">動態分析篩選牧場的產蛋效率與死亡預警狀況。</p>
-              </div>
-              <div>
-                <select
-                  value={filterRanch}
-                  onChange={(e) => setFilterRanch(e.target.value)}
-                  className="px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:bg-white text-xs font-bold"
-                >
-                  <option value="all">所有合作牧場加總</option>
-                  {ranches.map((r, idx) => (
-                    <option key={idx} value={r}>{r}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
+            {/* --- 分頁：設定與管理 --- */}
+            {activeTab === 'settings' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                
+                <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6">
+                  <h2 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
+                    <span className="w-2.5 h-6 bg-emerald-600 rounded-full inline-block"></span>
+                    🌾 茂生契約牧場名單管理
+                  </h2>
+                  <p className="text-xs text-slate-500 mb-4">
+                    客製化您的契約合作牧場與指定其型態。在此新增後，可立即於「每日產量回報」的選單內選取。
+                  </p>
 
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4">
-                <div className="p-3 rounded-xl bg-amber-100 text-amber-700">
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 11H5m14 0" /></svg>
-                </div>
-                <div>
-                  <span className="text-xs text-slate-400 font-bold block">累計台車數</span>
-                  <span className="text-lg sm:text-xl font-black text-slate-800">{stats.totalCarts} 台</span>
-                </div>
-              </div>
-
-              <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4">
-                <div className="p-3 rounded-xl bg-sky-100 text-sky-700">
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M20 7l-8-4-8 4" /></svg>
-                </div>
-                <div>
-                  <span className="text-xs text-slate-400 font-bold block">累計散/盤箱</span>
-                  <span className="text-lg sm:text-xl font-black text-slate-800">{(stats.totalBoxes + stats.totalTrayBoxes)} 箱</span>
-                </div>
-              </div>
-
-              <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4">
-                <div className="p-3 rounded-xl bg-emerald-100 text-emerald-700">
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 19v-6" /></svg>
-                </div>
-                <div>
-                  <span className="text-xs text-slate-400 font-bold block">總折算箱數</span>
-                  <span className="text-lg sm:text-xl font-black text-emerald-700">{stats.totalConvertedBoxes.toFixed(1)} 箱</span>
-                </div>
-              </div>
-
-              <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4">
-                <div className="p-3 rounded-xl bg-indigo-100 text-indigo-700">
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 8c-1.657" /></svg>
-                </div>
-                <div>
-                  <span className="text-xs text-slate-400 font-bold block">估算總顆數</span>
-                  <span className="text-lg sm:text-xl font-black text-indigo-700">{stats.totalEggsCalculated.toLocaleString()} 顆</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              
-              <div className="bg-white rounded-3xl shadow-sm border border-slate-200/60 p-6">
-                <h3 className="text-sm font-bold text-slate-800 mb-4 flex items-center gap-1.5">
-                  📈 產量波動趨勢 (全場折算箱數)
-                </h3>
-                {sortedRecords.length < 2 ? (
-                  <div className="h-60 flex flex-col justify-center items-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-100 text-xs">
-                    至少需要 2 筆以上的紀錄才能進行波動圖表分析
-                  </div>
-                ) : (
-                  <div className="relative">
-                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                      <svg viewBox="0 0 500 200" className="w-full h-48 overflow-visible">
-                        <line x1="0" y1="50" x2="500" y2="50" stroke="#e2e8f0" strokeDasharray="4 4" />
-                        <line x1="0" y1="100" x2="500" y2="100" stroke="#e2e8f0" strokeDasharray="4 4" />
-                        <line x1="0" y1="150" x2="500" y2="150" stroke="#e2e8f0" strokeDasharray="4 4" />
-                        
-                        {(() => {
-                          if (sortedRecords.length === 0) return null;
-                          const maxBoxes = Math.max(...sortedRecords.map(r => {
-                            const { totalBoxes } = calculateEggTotals(r.eggs, EGG_TYPES);
-                            return totalBoxes;
-                          })) || 1;
-                          const minBoxes = Math.min(...sortedRecords.map(r => {
-                            const { totalBoxes } = calculateEggTotals(r.eggs, EGG_TYPES);
-                            return totalBoxes;
-                          })) || 0;
-                          const range = (maxBoxes - minBoxes) || 1;
-
-                          const points = sortedRecords.map((r, idx) => {
-                            const { totalBoxes } = calculateEggTotals(r.eggs, EGG_TYPES);
-                            const x = sortedRecords.length > 1 ? (idx / (sortedRecords.length - 1)) * 440 + 30 : 250;
-                            const y = 170 - ((totalBoxes - minBoxes) / range) * 120;
-                            return { x, y, val: totalBoxes, date: r.date };
-                          });
-
-                          const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-
-                          return (
-                            <>
-                              <path
-                                d={`${pathD} L ${points[points.length-1].x} 180 L ${points[0].x} 180 Z`}
-                                fill="url(#emerald-grad)"
-                                opacity="0.15"
-                              />
-                              <path
-                                d={pathD}
-                                fill="none"
-                                stroke="#047857"
-                                strokeWidth="3"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              />
-                              {points.map((p, idx) => (
-                                <g key={idx}>
-                                  <circle cx={p.x} cy={p.y} r="5" fill="#ffffff" stroke="#047857" strokeWidth="3" />
-                                  <text x={p.x} y={p.y - 12} fontSize="10" fontWeight="bold" textAnchor="middle" fill="#047857">
-                                    {p.val.toFixed(1)}箱
-                                  </text>
-                                  <text x={p.x} y="195" fontSize="8" fill="#94a3b8" textAnchor="middle">
-                                    {p.date.substring(5)}
-                                  </text>
-                                </g>
-                              ))}
-                              <defs>
-                                <linearGradient id="emerald-grad" x1="0" y1="0" x2="0" y2="1">
-                                  <stop offset="0%" stopColor="#047857" />
-                                  <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-                                </linearGradient>
-                              </defs>
-                            </>
-                          );
-                        })()}
-                      </svg>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6">
-                <h3 className="text-sm font-bold text-slate-800 mb-4 flex items-center gap-1.5">
-                  ⚠️ 全場雞隻死亡數統計與紅色警戒 (閾值: 5隻)
-                </h3>
-                {sortedRecords.length < 2 ? (
-                  <div className="h-60 flex flex-col justify-center items-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-100 text-xs">
-                    至少需要 2 筆以上的紀錄才能進行健康度統計
-                  </div>
-                ) : (
-                  <div className="relative">
-                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                      <svg viewBox="0 0 500 200" className="w-full h-48 overflow-visible">
-                        <line x1="0" y1="90" x2="500" y2="90" stroke="#ef4444" strokeWidth="1" strokeDasharray="5 5" />
-                        <text x="490" y="85" fill="#ef4444" fontSize="8" fontWeight="bold" textAnchor="end">每日紅色警報點: 5 隻</text>
-
-                        {(() => {
-                          if (sortedRecords.length === 0) return null;
-                          const maxMort = Math.max(...sortedRecords.map(r => r.mortality || 0)) || 5;
-
-                          return sortedRecords.map((r, idx) => {
-                            const x = sortedRecords.length > 1 ? (idx / (sortedRecords.length - 1)) * 430 + 35 : 250;
-                            const height = ((r.mortality || 0) / Math.max(maxMort, 10)) * 130;
-                            const y = 175 - height;
-                            const isHigh = (r.mortality || 0) >= 5;
-
-                            return (
-                              <g key={idx}>
-                                <rect
-                                  x={x - 8}
-                                  y={y}
-                                  width="16"
-                                  height={Math.max(height, 2)}
-                                  rx="4"
-                                  fill={isHigh ? '#dc2626' : '#475569'}
-                                  opacity="0.85"
-                                />
-                                <text x={x} y={y - 8} fontSize="10" fontWeight="bold" textAnchor="middle" fill={isHigh ? '#dc2626' : '#475569'}>
-                                  {r.mortality || 0}
-                                </text>
-                                <text x={x} y="192" fontSize="8" fill="#94a3b8" textAnchor="middle">
-                                  {r.date.substring(5)}
-                                </text>
-                              </g>
-                            );
-                          });
-                        })()}
-                      </svg>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-            </div>
-          </div>
-        )}
-
-        {/* --- 分頁：設定與管理 --- */}
-        {activeTab === 'settings' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            
-            <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6">
-              <h2 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
-                <span className="w-2.5 h-6 bg-emerald-600 rounded-full inline-block"></span>
-                🌾 茂生契約牧場名單管理
-              </h2>
-              <p className="text-xs text-slate-500 mb-4">
-                客製化您的契約合作牧場與指定其型態。在此新增後，可立即於「每日產量回報」的選單內選取。
-              </p>
-
-              {/* 新增牧場 */}
-              <form onSubmit={handleAddRanch} className="space-y-3.5 mb-6 bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                <h4 className="text-xs font-black text-slate-600">新增合作牧場</h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <input
-                    type="text"
-                    placeholder="請輸入新牧場名稱"
-                    value={newRanchName}
-                    onChange={(e) => setNewRanchName(e.target.value)}
-                    className="px-3.5 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 text-xs font-bold"
-                  />
-                  <select
-                    value={newRanchType}
-                    onChange={(e) => setNewRanchType(e.target.value)}
-                    className="px-3.5 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 text-xs font-bold"
-                  >
-                    {RANCH_TYPES.map((type, idx) => (
-                      <option key={idx} value={type}>{type}</option>
-                    ))}
-                  </select>
-                </div>
-                <button
-                  type="submit"
-                  className="w-full bg-emerald-700 hover:bg-emerald-800 text-white py-2 rounded-xl text-xs font-bold shadow-md transition-all flex items-center justify-center gap-1"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 4v16m8-8H4" /></svg>
-                  確定新增此牧場
-                </button>
-              </form>
-
-              <div className="space-y-2 max-h-[250px] overflow-y-auto pr-2">
-                {ranches.map((name, idx) => (
-                  <div key={idx} className="flex justify-between items-center bg-slate-50 px-4 py-2.5 rounded-xl border border-slate-100">
-                    <div className="flex flex-col">
-                      <span className="text-sm font-bold text-slate-700">{name}</span>
-                      <span className="text-[10px] text-slate-400 font-bold">{ranchMapping[name] || '傳統場'}</span>
-                    </div>
-                    {!DEFAULT_RANCHES.includes(name) && (
-                      <button
-                        onClick={() => handleDeleteRanch(name)}
-                        className="text-red-400 hover:text-red-600 p-1 rounded-lg transition-all"
-                        title="刪除自訂牧場"
+                  {/* 新增牧場 */}
+                  <form onSubmit={handleAddRanch} className="space-y-3.5 mb-6 bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                    <h4 className="text-xs font-black text-slate-600">新增合作牧場</h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <input
+                        type="text"
+                        placeholder="請輸入新牧場名稱"
+                        value={newRanchName}
+                        onChange={(e) => setNewRanchName(e.target.value)}
+                        className="px-3.5 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 text-xs font-bold"
+                      />
+                      <select
+                        value={newRanchType}
+                        onChange={(e) => setNewRanchType(e.target.value)}
+                        className="px-3.5 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 text-xs font-bold"
                       >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862" /></svg>
-                      </button>
-                    )}
+                        {RANCH_TYPES.map((type, idx) => (
+                          <option key={idx} value={type}>{type}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <button
+                      type="submit"
+                      className="w-full bg-emerald-700 hover:bg-emerald-800 text-white py-2 rounded-xl text-xs font-bold shadow-md transition-all flex items-center justify-center gap-1"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 4v16m8-8H4" /></svg>
+                      確定新增此牧場
+                    </button>
+                  </form>
+
+                  <div className="space-y-2 max-h-[250px] overflow-y-auto pr-2">
+                    {ranches.map((name, idx) => (
+                      <div key={idx} className="flex justify-between items-center bg-slate-50 px-4 py-2.5 rounded-xl border border-slate-100">
+                        <div className="flex flex-col">
+                          <span className="text-sm font-bold text-slate-700">{name}</span>
+                          <span className="text-[10px] text-slate-400 font-bold">{ranchMapping[name] || '傳統場'}</span>
+                        </div>
+                        {!DEFAULT_RANCHES.includes(name) && (
+                          <button
+                            onClick={() => handleDeleteRanch(name)}
+                            className="text-red-400 hover:text-red-600 p-1 rounded-lg transition-all"
+                            title="刪除自訂牧場"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862" /></svg>
+                          </button>
+                        )}
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 flex flex-col justify-between">
-              <div>
-                <h2 className="text-lg font-bold text-slate-900 mb-3 flex items-center gap-2">
-                  <span className="w-2.5 h-6 bg-slate-600 rounded-full inline-block"></span>
-                  📖 計量標準備忘
-                </h2>
-                <div className="space-y-3.5 text-xs text-slate-600 leading-relaxed font-bold">
-                  <p>
-                    <strong>1. 蛋雞羽數與蛋種勾稽：</strong> 為避免現場人員誤登無關的蛋種產量，系統特別設計強制勾稽規則。只有當您選擇並輸入特定蛋雞羽數後，下方相對應的蛋種填報格才會帶出。
-                  </p>
-                  <p>
-                    <strong>2. 產蛋率異常預警機制：</strong> 當日全場蛋量（台車 * 4320 + 散箱 * 200）必須位於總飼養羽數之 85% ~ 100% 之間，若超出此範圍將在送出時觸發安全確認對話窗，以確保無抄寫或按鍵輸入失誤。
-                  </p>
-                  <p>
-                    <strong>3. 雞隻死亡動態回報：</strong> 將動態依據勾選的雞種，帶出各別輸入框來記錄死亡隻數，有效區隔不同雞群的健康狀況。
-                  </p>
-                  <p>
-                    <strong>4. 數據完整離線儲存：</strong> 所有的資料均妥善保存於本機 LocalStorage 中，無任何對外傳輸之隱私疑慮。
-                  </p>
                 </div>
-              </div>
 
-              {/* 復原初始設定 */}
-              <div className="pt-6 border-t border-slate-100 mt-6 flex justify-between items-center">
-                <div>
-                  <h4 className="text-xs font-black text-slate-700">重設歷史紀錄</h4>
-                  <p className="text-[10px] text-slate-400">一鍵刪除所有 LocalStorage 儲存資料。</p>
+                <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 flex flex-col justify-between">
+                  <div>
+                    <h2 className="text-lg font-bold text-slate-900 mb-3 flex items-center gap-2">
+                      <span className="w-2.5 h-6 bg-slate-600 rounded-full inline-block"></span>
+                      📖 計量標準備忘
+                    </h2>
+                    <div className="space-y-3.5 text-xs text-slate-600 leading-relaxed font-bold">
+                      <p>
+                        <strong>1. 蛋雞羽數與蛋種勾稽：</strong> 為避免現場人員誤登無關的蛋種產量，系統特別設計強制勾稽規則。只有當您選擇並輸入特定蛋雞羽數後，下方相對應的蛋種填報格才會帶出。
+                      </p>
+                      <p>
+                        <strong>2. 產蛋率異常預警機制：</strong> 當日全場蛋量（台車 * 4320 + 散箱 * 200）必須位於總飼養羽數之 85% ~ 100% 之間，若超出此範圍將在送出時觸發安全確認對話窗，以確保無抄寫或按鍵輸入失誤。
+                      </p>
+                      <p>
+                        <strong>3. 雞隻死亡動態回報：</strong> 將動態依據勾選的雞種，帶出各別輸入框來記錄死亡隻數，有效區隔不同雞群的健康狀況。
+                      </p>
+                      <p>
+                        <strong>4. 數據完整離線儲存：</strong> 所有的資料均妥善保存於本機 LocalStorage 中，無任何對外傳輸之隱私疑慮。
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 復原初始設定 */}
+                  <div className="pt-6 border-t border-slate-100 mt-6 flex justify-between items-center">
+                    <div>
+                      <h4 className="text-xs font-black text-slate-700">重設歷史紀錄</h4>
+                      <p className="text-[10px] text-slate-400">一鍵刪除所有 LocalStorage 儲存資料。</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (window.confirm('確定要清空所有的歷史生產紀錄與自訂牧場配對嗎？本操作將無法還原！')) {
+                          setRecords([]);
+                          setRanches(DEFAULT_RANCHES);
+                          setRanchMapping(INITIAL_RANCH_MAPPING);
+                          localStorage.removeItem('maosheng_gh_ranch_records_v2_5');
+                          localStorage.removeItem('maosheng_gh_ranch_list_v2_5');
+                          localStorage.removeItem('maosheng_gh_ranch_mapping_v2_5');
+                          showToast('歷史紀錄與設定值已成功還原為初始設定。', 'info');
+                        }
+                      }}
+                      className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-3 py-2 rounded-xl text-xs font-bold transition-all"
+                    >
+                      還原初始設定
+                    </button>
+                  </div>
+
                 </div>
-                <button
-                  onClick={() => {
-                    if (window.confirm('確定要清空所有的歷史生產紀錄與自訂牧場配對嗎？本操作將無法還原！')) {
-                      setRecords([]);
-                      setRanches(DEFAULT_RANCHES);
-                      setRanchMapping(INITIAL_RANCH_MAPPING);
-                      localStorage.removeItem('maosheng_gh_ranch_records_v2_5');
-                      localStorage.removeItem('maosheng_gh_ranch_list_v2_5');
-                      localStorage.removeItem('maosheng_gh_ranch_mapping_v2_5');
-                      showToast('歷史紀錄與設定值已成功還原為初始設定。', 'info');
-                    }
-                  }}
-                  className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-3 py-2 rounded-xl text-xs font-bold transition-all"
-                >
-                  還原初始設定
-                </button>
+
               </div>
+            )}
 
-            </div>
+          </main>
 
-          </div>
-        )}
+          {/* 底部頁尾與版權 */}
+          <footer className="text-center text-slate-400 text-[10px] sm:text-xs mt-12 pt-6 border-t border-slate-200">
+            <p>© 2026 茂生契約牧場產量紀錄系統 {VERSION} - 專屬現場派駐人員生產紀錄助手</p>
+            <p className="mt-1">符合 RWD 高可用行動裝置優先、無資安外洩風險之本機資料防範機制</p>
+          </footer>
+        </div>
+      );
+    }
 
-      </main>
-
-      {/* 底部頁尾與版權 */}
-      <footer className="text-center text-slate-400 text-[10px] sm:text-xs mt-12 pt-6 border-t border-slate-200">
-        <p>© 2026 茂生契約牧場產量紀錄系統 {VERSION} - 專屬現場派駐人員生產紀錄助手</p>
-        <p className="mt-1">符合 RWD 高可用行動裝置優先、無資安外洩風險之本機資料防範機制</p>
-      </footer>
-    </div>
-  );
-}
+    // 渲染應用程式至 HTML DOM 中
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
